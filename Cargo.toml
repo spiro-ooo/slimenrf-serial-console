@@ -1,0 +1,18 @@
+[package]
+name = "slimenrf-serial-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform GUI for controlling SlimeNRF tracker and receiver firmware over USB serial"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jitingcn/SlimeVR-Tracker-nRF"
+
+[dependencies]
+# Immediate-mode GUI. Pulls in egui, winit and glow; works on Linux, Windows and macOS.
+eframe = "0.34"
+# Cross-platform serial port access + USB VID/PID enumeration.
+serialport = "4.9"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
