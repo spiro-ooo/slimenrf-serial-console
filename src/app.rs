@@ -10,7 +10,6 @@
 //! guided to connect first. The console renders ANSI-coloured firmware output and
 //! can filter sent lines, warnings, and errors independently.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -31,6 +30,23 @@ const DANGER: egui::Color32 = egui::Color32::from_rgb(170, 62, 62); // destructi
 const MUTED: egui::Color32 = egui::Color32::from_rgb(166, 171, 180); // secondary text
 const CARD_BG: egui::Color32 = egui::Color32::from_rgb(33, 37, 46);
 const BANNER_BG: egui::Color32 = egui::Color32::from_rgb(52, 45, 30);
+
+// Per-section accent hues. Each command section gets its own colour: a coloured
+// header, a tinted bordered frame, and tinted buttons. This turns the long list of
+// look-alike grey buttons into colour-grouped clusters you can scan at a glance.
+// Red is deliberately *not* used as a section hue — it's reserved app-wide for
+// destructive actions (see `danger_button`) so "careful" always looks the same.
+const HUE_INFO: egui::Color32 = egui::Color32::from_rgb(96, 142, 196); // steel blue
+const HUE_SENSOR: egui::Color32 = egui::Color32::from_rgb(70, 168, 162); // teal
+const HUE_MAG: egui::Color32 = egui::Color32::from_rgb(150, 124, 206); // violet
+const HUE_TEMP: egui::Color32 = egui::Color32::from_rgb(202, 150, 74); // amber
+const HUE_CONN: egui::Color32 = egui::Color32::from_rgb(106, 168, 96); // green
+const HUE_SYSTEM: egui::Color32 = egui::Color32::from_rgb(120, 140, 158); // slate
+const HUE_RESET: egui::Color32 = egui::Color32::from_rgb(192, 110, 92); // clay (destructive-ish)
+const HUE_TEST: egui::Color32 = egui::Color32::from_rgb(196, 116, 170); // magenta
+const HUE_STATS: egui::Color32 = egui::Color32::from_rgb(86, 156, 188); // cyan
+const HUE_DATA: egui::Color32 = egui::Color32::from_rgb(170, 150, 96); // ochre
+const HUE_REMOTE: egui::Color32 = egui::Color32::from_rgb(126, 150, 210); // periwinkle
 
 // ---- console line model ----------------------------------------------------
 
@@ -322,7 +338,6 @@ pub struct App {
     dfu_running: bool,
     dfu_log: Vec<(DfuLevel, String)>,
     dfu_result: Option<(usize, usize)>,
-    dfu_drives_present: usize,
 }
 
 /// Severity for a line in the DFU progress log (styling only).
@@ -375,9 +390,93 @@ impl Default for App {
             dfu_running: false,
             dfu_log: Vec::new(),
             dfu_result: None,
-            dfu_drives_present: 0,
         }
     }
+}
+
+// ---- section styling helpers ----------------------------------------------
+
+/// Mix a colour toward black by `t` (0 = unchanged, 1 = black).
+fn darken(c: egui::Color32, t: f32) -> egui::Color32 {
+    let f = 1.0 - t.clamp(0.0, 1.0);
+    egui::Color32::from_rgb(
+        (c.r() as f32 * f) as u8,
+        (c.g() as f32 * f) as u8,
+        (c.b() as f32 * f) as u8,
+    )
+}
+
+/// Blend two colours by `t` (0 = a, 1 = b).
+fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// Coloured, bold header text for a section's CollapsingHeader.
+fn section_header(text: &str, hue: egui::Color32) -> egui::RichText {
+    egui::RichText::new(text)
+        .color(mix(hue, egui::Color32::WHITE, 0.18))
+        .strong()
+        .size(14.5)
+}
+
+/// A bordered, faintly-tinted frame that boxes a section's body in its hue.
+fn section_frame(hue: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(darken(hue, 0.86)) // very dark wash of the hue
+        .stroke(egui::Stroke::new(1.0, darken(hue, 0.35)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .outer_margin(egui::Margin {
+            left: 0,
+            right: 0,
+            top: 2,
+            bottom: 6,
+        })
+}
+
+/// Tint every default `ui.button(...)` in the current scope with the section hue,
+/// for the inactive / hovered / active states. Buttons that set an explicit
+/// `.fill(...)` (e.g. the red `danger_button`) are unaffected and still stand out.
+fn tint_buttons(ui: &mut egui::Ui, hue: egui::Color32) {
+    let v = ui.visuals_mut();
+    let text = mix(hue, egui::Color32::WHITE, 0.72);
+    // inactive
+    v.widgets.inactive.weak_bg_fill = darken(hue, 0.62);
+    v.widgets.inactive.fg_stroke.color = text;
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, darken(hue, 0.45));
+    // hovered (brighter)
+    v.widgets.hovered.weak_bg_fill = darken(hue, 0.42);
+    v.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, mix(hue, egui::Color32::WHITE, 0.15));
+    // active (pressed, brightest)
+    v.widgets.active.weak_bg_fill = darken(hue, 0.28);
+    v.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, mix(hue, egui::Color32::WHITE, 0.30));
+}
+
+/// Render one coloured, framed collapsing section.
+///
+/// Free function (not a method) so the `body` closure can capture `&mut self` at
+/// the call site without conflicting with a `&mut self` receiver here.
+fn section(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    title: &str,
+    hue: egui::Color32,
+    default_open: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    egui::CollapsingHeader::new(section_header(title, hue))
+        .id_salt(id_salt)
+        .default_open(default_open)
+        .show_unindented(ui, |ui| {
+            section_frame(hue).show(ui, |ui| {
+                tint_buttons(ui, hue);
+                body(ui);
+            });
+        });
 }
 
 impl App {
@@ -750,6 +849,7 @@ impl App {
     fn dfu_update_card(&mut self, ui: &mut egui::Ui) {
         egui::Frame::group(ui.style())
             .fill(CARD_BG)
+            .stroke(egui::Stroke::new(1.0, darken(ACCENT_AMBER, 0.45)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -1151,6 +1251,7 @@ impl App {
         // Common Tasks card
         egui::Frame::group(ui.style())
             .fill(CARD_BG)
+            .stroke(egui::Stroke::new(1.0, darken(ACCENT, 0.4)))
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("COMMON TASKS").size(13.0).strong().color(MUTED));
                 ui.add_space(6.0);
@@ -1195,167 +1296,151 @@ impl App {
         ui.add_space(6.0);
 
         ui.add_enabled_ui(en, |ui| {
-            egui::CollapsingHeader::new("📋  Device information")
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("info").clicked() { self.send_cmd("info".into()); }
-                        if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
-                        if ui.button("battery").clicked() { self.send_cmd("battery".into()); }
-                        if ui.button("nvs").clicked() { self.send_cmd("nvs".into()); }
-                        if ui.button("help").clicked() { self.send_cmd("help".into()); }
-                        if ui.button("ping").clicked() { self.send_cmd("ping".into()); }
-                        if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
-                    });
+            section(ui, "t_info", "📋  Device information", HUE_INFO, true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("info").clicked() { self.send_cmd("info".into()); }
+                    if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
+                    if ui.button("battery").clicked() { self.send_cmd("battery".into()); }
+                    if ui.button("nvs").clicked() { self.send_cmd("nvs".into()); }
+                    if ui.button("help").clicked() { self.send_cmd("help".into()); }
+                    if ui.button("ping").clicked() { self.send_cmd("ping".into()); }
+                    if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("🎛  Sensors & calibration")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("scan").clicked() { self.send_cmd("scan".into()); }
-                        if ui.button("calibrate (ZRO)").clicked() { self.send_cmd("calibrate".into()); }
-                        if ui.button("6-side").clicked() { self.send_cmd("6-side".into()); }
-                        if ui.button("range").clicked() { self.send_cmd("range".into()); }
-                        if ui.button("range reset").clicked() { self.send_cmd("range reset".into()); }
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label("debug duration (1–60 s):");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
-                        if ui.button("debug").clicked() {
-                            let d = self.t_debug_dur.trim().to_owned();
-                            if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
+            section(ui, "t_sensor", "🎛  Sensors & calibration", HUE_SENSOR, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("scan").clicked() { self.send_cmd("scan".into()); }
+                    if ui.button("calibrate (ZRO)").clicked() { self.send_cmd("calibrate".into()); }
+                    if ui.button("6-side").clicked() { self.send_cmd("6-side".into()); }
+                    if ui.button("range").clicked() { self.send_cmd("range".into()); }
+                    if ui.button("range reset").clicked() { self.send_cmd("range reset".into()); }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("debug duration (1–60 s):");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
+                    if ui.button("debug").clicked() {
+                        let d = self.t_debug_dur.trim().to_owned();
+                        if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("gyro sensitivity (deg diff) X/Y/Z:");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
+                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
+                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
+                    if ui.button("set sens").clicked() {
+                        let x = self.t_sens_x.trim().to_owned();
+                        let y = self.t_sens_y.trim().to_owned();
+                        let z = self.t_sens_z.trim().to_owned();
+                        if x.is_empty() || y.is_empty() || z.is_empty() {
+                            self.push_info("Enter all three sens values (X, Y, Z).".into());
+                        } else {
+                            self.send_cmd(format!("sens {x},{y},{z}"));
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("gyro sensitivity (deg diff) X/Y/Z:");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
-                        ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
-                        ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
-                        if ui.button("set sens").clicked() {
-                            let x = self.t_sens_x.trim().to_owned();
-                            let y = self.t_sens_y.trim().to_owned();
-                            let z = self.t_sens_z.trim().to_owned();
-                            if x.is_empty() || y.is_empty() || z.is_empty() {
-                                self.push_info("Enter all three sens values (X, Y, Z).".into());
-                            } else {
-                                self.send_cmd(format!("sens {x},{y},{z}"));
-                            }
-                        }
-                        if ui.button("sens reset").clicked() { self.send_cmd("sens reset".into()); }
-                    });
+                    }
+                    if ui.button("sens reset").clicked() { self.send_cmd("sens reset".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("🧭  Magnetometer")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("status (mag)").clicked() { self.send_cmd("mag".into()); }
-                        if ui.button("mag on").clicked() { self.send_cmd("mag on".into()); }
-                        if ui.button("mag off").clicked() { self.send_cmd("mag off".into()); }
-                        if ui.button("mag clear").clicked() { self.send_cmd("mag clear".into()); }
-                        if ui.button("mag cal").clicked() { self.send_cmd("mag cal".into()); }
-                    });
+            section(ui, "t_mag", "🧭  Magnetometer", HUE_MAG, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("status (mag)").clicked() { self.send_cmd("mag".into()); }
+                    if ui.button("mag on").clicked() { self.send_cmd("mag on".into()); }
+                    if ui.button("mag off").clicked() { self.send_cmd("mag off".into()); }
+                    if ui.button("mag clear").clicked() { self.send_cmd("mag clear".into()); }
+                    if ui.button("mag cal").clicked() { self.send_cmd("mag cal".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("🌡  Temperature calibration (tcal)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("tcal status").clicked() { self.send_cmd("tcal status".into()); }
-                        if ui.button("tcal on").clicked() { self.send_cmd("tcal on".into()); }
-                        if ui.button("tcal off").clicked() { self.send_cmd("tcal off".into()); }
-                        if ui.button("tcal dump").clicked() { self.send_cmd("tcal dump".into()); }
-                        if ui.button("tcal check").clicked() { self.send_cmd("tcal check".into()); }
-                        if ui.button("tcal clear").clicked() { self.send_cmd("tcal clear".into()); }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("tcal auto on").clicked() { self.send_cmd("tcal auto on".into()); }
-                        if ui.button("tcal auto off").clicked() { self.send_cmd("tcal auto off".into()); }
-                        if ui.button("tcal boot on").clicked() { self.send_cmd("tcal boot on".into()); }
-                        if ui.button("tcal boot off").clicked() { self.send_cmd("tcal boot off".into()); }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("test temp (°C):");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
-                        if ui.button("tcal test").clicked() {
-                            let t = self.t_tcal_test.trim().to_owned();
-                            if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
-                        }
-                        ui.separator();
-                        ui.label("remove index:");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
-                        if ui.button("tcal remove").clicked() {
-                            let i = self.t_tcal_remove.trim().to_owned();
-                            if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
-                        }
-                    });
+            section(ui, "t_tcal", "🌡  Temperature calibration (tcal)", HUE_TEMP, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("tcal status").clicked() { self.send_cmd("tcal status".into()); }
+                    if ui.button("tcal on").clicked() { self.send_cmd("tcal on".into()); }
+                    if ui.button("tcal off").clicked() { self.send_cmd("tcal off".into()); }
+                    if ui.button("tcal dump").clicked() { self.send_cmd("tcal dump".into()); }
+                    if ui.button("tcal check").clicked() { self.send_cmd("tcal check".into()); }
+                    if ui.button("tcal clear").clicked() { self.send_cmd("tcal clear".into()); }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("tcal auto on").clicked() { self.send_cmd("tcal auto on".into()); }
+                    if ui.button("tcal auto off").clicked() { self.send_cmd("tcal auto off".into()); }
+                    if ui.button("tcal boot on").clicked() { self.send_cmd("tcal boot on".into()); }
+                    if ui.button("tcal boot off").clicked() { self.send_cmd("tcal boot off".into()); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("test temp (°C):");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
+                    if ui.button("tcal test").clicked() {
+                        let t = self.t_tcal_test.trim().to_owned();
+                        if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
+                    }
+                    ui.separator();
+                    ui.label("remove index:");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
+                    if ui.button("tcal remove").clicked() {
+                        let i = self.t_tcal_remove.trim().to_owned();
+                        if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
+                    }
+                });
+            });
 
-            egui::CollapsingHeader::new("🔗  Connection & pairing")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("receiver address (16 hex):");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
-                        if ui.button("set").clicked() {
-                            let a = self.t_set_addr.trim().to_owned();
-                            if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("pair").clicked() { self.send_cmd("pair".into()); }
-                        if Self::danger_button(ui, "clear pairing") { self.send_cmd("clear".into()); }
-                        ui.separator();
-                        if ui.button("tdma on").clicked() { self.send_cmd("tdma on".into()); }
-                        if ui.button("tdma off").clicked() { self.send_cmd("tdma off".into()); }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("RF channel (1–100):");
-                        ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
-                        if ui.button("set channel").clicked() {
-                            let c = self.t_channel.trim().to_owned();
-                            if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
-                        }
-                        if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
-                    });
+            section(ui, "t_conn", "🔗  Connection & pairing", HUE_CONN, false, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("receiver address (16 hex):");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
+                    if ui.button("set").clicked() {
+                        let a = self.t_set_addr.trim().to_owned();
+                        if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
+                    }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("pair").clicked() { self.send_cmd("pair".into()); }
+                    if Self::danger_button(ui, "clear pairing") { self.send_cmd("clear".into()); }
+                    ui.separator();
+                    if ui.button("tdma on").clicked() { self.send_cmd("tdma on".into()); }
+                    if ui.button("tdma off").clicked() { self.send_cmd("tdma off".into()); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("RF channel (1–100):");
+                    ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
+                    if ui.button("set channel").clicked() {
+                        let c = self.t_channel.trim().to_owned();
+                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
+                    }
+                    if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
+                });
+            });
 
-            egui::CollapsingHeader::new("⚙  System")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
-                        if Self::danger_button(ui, "shutdown") { self.send_cmd("shutdown".into()); }
-                        if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
-                        if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
-                    });
+            section(ui, "t_system", "⚙  System", HUE_SYSTEM, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
+                    if Self::danger_button(ui, "shutdown") { self.send_cmd("shutdown".into()); }
+                    if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
+                    if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("♻  Reset / clear (careful)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("reset zro").clicked() { self.send_cmd("reset zro".into()); }
-                        if ui.button("reset acc").clicked() { self.send_cmd("reset acc".into()); }
-                        if ui.button("reset sens").clicked() { self.send_cmd("reset sens".into()); }
-                        if ui.button("reset tcal").clicked() { self.send_cmd("reset tcal".into()); }
-                        if ui.button("reset mag").clicked() { self.send_cmd("reset mag".into()); }
-                        if ui.button("reset bat").clicked() { self.send_cmd("reset bat".into()); }
-                        if ui.button("reset fusion").clicked() { self.send_cmd("reset fusion".into()); }
-                        if Self::danger_button(ui, "reset all") { self.send_cmd("reset all".into()); }
-                    });
+            section(ui, "t_reset", "♻  Reset / clear (careful)", HUE_RESET, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("reset zro").clicked() { self.send_cmd("reset zro".into()); }
+                    if ui.button("reset acc").clicked() { self.send_cmd("reset acc".into()); }
+                    if ui.button("reset sens").clicked() { self.send_cmd("reset sens".into()); }
+                    if ui.button("reset tcal").clicked() { self.send_cmd("reset tcal".into()); }
+                    if ui.button("reset mag").clicked() { self.send_cmd("reset mag".into()); }
+                    if ui.button("reset bat").clicked() { self.send_cmd("reset bat".into()); }
+                    if ui.button("reset fusion").clicked() { self.send_cmd("reset fusion".into()); }
+                    if Self::danger_button(ui, "reset all") { self.send_cmd("reset all".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("🧪  Test mode")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("test on").clicked() { self.send_cmd("test on".into()); }
-                        if ui.button("test off").clicked() { self.send_cmd("test off".into()); }
-                    });
+            section(ui, "t_test", "🧪  Test mode", HUE_TEST, false, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("test on").clicked() { self.send_cmd("test on".into()); }
+                    if ui.button("test off").clicked() { self.send_cmd("test off".into()); }
                 });
+            });
         });
 
         ui.add_space(8.0);
@@ -1369,6 +1454,7 @@ impl App {
         // Common Tasks card
         egui::Frame::group(ui.style())
             .fill(CARD_BG)
+            .stroke(egui::Stroke::new(1.0, darken(ACCENT, 0.4)))
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("COMMON TASKS").size(13.0).strong().color(MUTED));
                 ui.add_space(6.0);
@@ -1410,218 +1496,204 @@ impl App {
         ui.add_space(6.0);
 
         ui.add_enabled_ui(en, |ui| {
-            egui::CollapsingHeader::new("📋  Device information")
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("info").clicked() { self.send_cmd("info".into()); }
-                        if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
-                        if ui.button("list (paired)").clicked() { self.send_cmd("list".into()); }
-                        if ui.button("help").clicked() { self.send_cmd("help".into()); }
-                        if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
-                    });
+            section(ui, "r_info", "📋  Device information", HUE_INFO, true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("info").clicked() { self.send_cmd("info".into()); }
+                    if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
+                    if ui.button("list (paired)").clicked() { self.send_cmd("list".into()); }
+                    if ui.button("help").clicked() { self.send_cmd("help".into()); }
+                    if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("🔗  Paired devices")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("add address (12 hex):");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
-                        if ui.button("add").clicked() {
-                            let a = self.r_add_addr.trim().to_owned();
-                            if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("pair count (blank = until timeout):");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
-                        if ui.button("pair").clicked() {
-                            let c = self.r_pair_count.trim().to_owned();
-                            if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
-                        }
-                        if ui.button("exit pairing").clicked() { self.send_cmd("exit".into()); }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("remove last").clicked() { self.send_cmd("remove".into()); }
-                        if Self::danger_button(ui, "clear all pairings") { self.send_cmd("clear".into()); }
-                    });
+            section(ui, "r_paired", "🔗  Paired devices", HUE_CONN, false, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("add address (12 hex):");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
+                    if ui.button("add").clicked() {
+                        let a = self.r_add_addr.trim().to_owned();
+                        if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
+                    }
                 });
-
-            egui::CollapsingHeader::new("📊  Statistics")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("stats (toggle)").clicked() { self.send_cmd("stats".into()); }
-                        ui.separator();
-                        ui.label("for N seconds:");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_stats_sec).desired_width(50.0).hint_text("30"));
-                        if ui.button("stats N").clicked() {
-                            let s = self.r_stats_sec.trim().to_owned();
-                            if s.is_empty() { self.push_info("Enter a duration in seconds.".into()); } else { self.send_cmd(format!("stats {s}")); }
-                        }
-                        if ui.button("resetstats").clicked() { self.send_cmd("resetstats".into()); }
-                    });
+                ui.horizontal(|ui| {
+                    ui.label("pair count (blank = until timeout):");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
+                    if ui.button("pair").clicked() {
+                        let c = self.r_pair_count.trim().to_owned();
+                        if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
+                    }
+                    if ui.button("exit pairing").clicked() { self.send_cmd("exit".into()); }
                 });
-
-            egui::CollapsingHeader::new("📡  RF channel (local receiver)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("channel (1–100):");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_channel).desired_width(56.0).hint_text("25"));
-                        if ui.button("set channel").clicked() {
-                            let c = self.r_channel.trim().to_owned();
-                            if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
-                        }
-                        if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
-                        ui.separator();
-                        if ui.button("rssi_scan").clicked() { self.send_cmd("rssi_scan".into()); }
-                    });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("remove last").clicked() { self.send_cmd("remove".into()); }
+                    if Self::danger_button(ui, "clear all pairings") { self.send_cmd("clear".into()); }
                 });
+            });
 
-            egui::CollapsingHeader::new("⚙  System")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
-                        if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
-                        if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
-                    });
-                });
-
-            egui::CollapsingHeader::new("💾  Data collection & OTA")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("collect from tracker id:");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_collect_id).desired_width(50.0).hint_text("0"));
-                        if ui.button("collect").clicked() {
-                            let i = self.r_collect_id.trim().to_owned();
-                            if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("collect {i}")); }
-                        }
-                        if ui.button("collect off").clicked() { self.send_cmd("collect off".into()); }
-                        if ui.button("collect status").clicked() { self.send_cmd("collect".into()); }
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("ota status").clicked() { self.send_cmd("ota".into()); }
-                        ui.separator();
-                        ui.label("ota info id:");
-                        ui.add(egui::TextEdit::singleline(&mut self.r_ota_info).desired_width(50.0).hint_text("0"));
-                        if ui.button("ota info").clicked() {
-                            let i = self.r_ota_info.trim().to_owned();
-                            if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("ota info {i}")); }
-                        }
-                        if Self::danger_button(ui, "ota abort") { self.send_cmd("ota abort".into()); }
-                    });
-                });
-
-            egui::CollapsingHeader::new("🛰  Remote commands → tracker(s)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Target:");
-                        ui.selectable_value(&mut self.rem_target_all, true, "All active");
-                        ui.selectable_value(&mut self.rem_target_all, false, "By ID");
-                        let allow_id_edit = !self.rem_target_all;
-                        ui.add_enabled(
-                            allow_id_edit,
-                            egui::TextEdit::singleline(&mut self.rem_target_id).desired_width(50.0).hint_text("0"),
-                        );
-                    });
-
-                    let target = self.remote_target();
-                    ui.label(egui::RichText::new(format!("→ send {target} <command>")).color(MUTED).monospace());
+            section(ui, "r_stats", "📊  Statistics", HUE_STATS, false, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("stats (toggle)").clicked() { self.send_cmd("stats".into()); }
                     ui.separator();
-
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("calibrate").clicked() { self.send_cmd(format!("send {target} calibrate")); }
-                        if ui.button("6-side").clicked() { self.send_cmd(format!("send {target} 6-side")); }
-                        if ui.button("scan").clicked() { self.send_cmd(format!("send {target} scan")); }
-                        if ui.button("ping").clicked() { self.send_cmd(format!("send {target} ping")); }
-                        if ui.button("meow 🐱").clicked() { self.send_cmd(format!("send {target} meow")); }
-                        if ui.button("reboot").clicked() { self.send_cmd(format!("send {target} reboot")); }
-                        if ui.button("fusion reset").clicked() { self.send_cmd(format!("send {target} fusion")); }
-                        if Self::danger_button(ui, "shutdown") { self.send_cmd(format!("send {target} shutdown")); }
-                        if Self::danger_button(ui, "clear pairing") { self.send_cmd(format!("send {target} clear")); }
-                    });
-
-                    ui.add_space(2.0);
-                    ui.label("Magnetometer:");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("mag on").clicked() { self.send_cmd(format!("send {target} mag on")); }
-                        if ui.button("mag off").clicked() { self.send_cmd(format!("send {target} mag off")); }
-                        if ui.button("mag clear").clicked() { self.send_cmd(format!("send {target} mag clear")); }
-                        if ui.button("mag cal").clicked() { self.send_cmd(format!("send {target} mag cal")); }
-                    });
-
-                    ui.add_space(2.0);
-                    ui.label("Reset:");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("reset zro").clicked() { self.send_cmd(format!("send {target} reset zro")); }
-                        if ui.button("reset acc").clicked() { self.send_cmd(format!("send {target} reset acc")); }
-                        if ui.button("reset bat").clicked() { self.send_cmd(format!("send {target} reset bat")); }
-                        if ui.button("reset mag").clicked() { self.send_cmd(format!("send {target} reset mag")); }
-                        if ui.button("reset tcal").clicked() { self.send_cmd(format!("send {target} reset tcal")); }
-                        if ui.button("reset fusion").clicked() { self.send_cmd(format!("send {target} reset fusion")); }
-                    });
-
-                    ui.add_space(2.0);
-                    ui.label("Temperature calibration:");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("tcal on").clicked() { self.send_cmd(format!("send {target} tcal on")); }
-                        if ui.button("tcal off").clicked() { self.send_cmd(format!("send {target} tcal off")); }
-                        if ui.button("tcal auto on").clicked() { self.send_cmd(format!("send {target} tcal auto on")); }
-                        if ui.button("tcal auto off").clicked() { self.send_cmd(format!("send {target} tcal auto off")); }
-                        if ui.button("tcal boot on").clicked() { self.send_cmd(format!("send {target} tcal boot on")); }
-                        if ui.button("tcal boot off").clicked() { self.send_cmd(format!("send {target} tcal boot off")); }
-                        if ui.button("tcal clear").clicked() { self.send_cmd(format!("send {target} tcal clear")); }
-                    });
-
-                    ui.add_space(2.0);
-                    ui.label("Scheduling / test / bootloader:");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("tdma on").clicked() { self.send_cmd(format!("send {target} tdma on")); }
-                        if ui.button("tdma off").clicked() { self.send_cmd(format!("send {target} tdma off")); }
-                        if ui.button("test on").clicked() { self.send_cmd(format!("send {target} test on")); }
-                        if ui.button("test off").clicked() { self.send_cmd(format!("send {target} test off")); }
-                        if Self::danger_button(ui, "dfu") { self.send_cmd(format!("send {target} dfu")); }
-                        if Self::danger_button(ui, "dfu ota") { self.send_cmd(format!("send {target} dfu ota")); }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label("sens X/Y/Z:");
-                        ui.add(egui::TextEdit::singleline(&mut self.rem_sens_x).desired_width(56.0).hint_text("x"));
-                        ui.add(egui::TextEdit::singleline(&mut self.rem_sens_y).desired_width(56.0).hint_text("y"));
-                        ui.add(egui::TextEdit::singleline(&mut self.rem_sens_z).desired_width(56.0).hint_text("z"));
-                        if ui.button("send sens").clicked() {
-                            let x = self.rem_sens_x.trim().to_owned();
-                            let y = self.rem_sens_y.trim().to_owned();
-                            let z = self.rem_sens_z.trim().to_owned();
-                            if x.is_empty() || y.is_empty() || z.is_empty() {
-                                self.push_info("Enter all three sens values.".into());
-                            } else {
-                                self.send_cmd(format!("send {target} sens {x},{y},{z}"));
-                            }
-                        }
-                        if ui.button("send sens reset").clicked() { self.send_cmd(format!("send {target} sens reset")); }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Channel commands apply to ALL trackers + receiver (firmware restriction):")
-                            .color(MUTED),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.rem_channel).desired_width(56.0).hint_text("25"));
-                        if ui.button("send all channel").clicked() {
-                            let c = self.rem_channel.trim().to_owned();
-                            if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("send all channel {c}")); }
-                        }
-                        if ui.button("send all clearchannel").clicked() { self.send_cmd("send all clearchannel".into()); }
-                    });
+                    ui.label("for N seconds:");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_stats_sec).desired_width(50.0).hint_text("30"));
+                    if ui.button("stats N").clicked() {
+                        let s = self.r_stats_sec.trim().to_owned();
+                        if s.is_empty() { self.push_info("Enter a duration in seconds.".into()); } else { self.send_cmd(format!("stats {s}")); }
+                    }
+                    if ui.button("resetstats").clicked() { self.send_cmd("resetstats".into()); }
                 });
+            });
+
+            section(ui, "r_channel", "📡  RF channel (local receiver)", HUE_SENSOR, false, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("channel (1–100):");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_channel).desired_width(56.0).hint_text("25"));
+                    if ui.button("set channel").clicked() {
+                        let c = self.r_channel.trim().to_owned();
+                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
+                    }
+                    if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
+                    ui.separator();
+                    if ui.button("rssi_scan").clicked() { self.send_cmd("rssi_scan".into()); }
+                });
+            });
+
+            section(ui, "r_system", "⚙  System", HUE_SYSTEM, false, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
+                    if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
+                    if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
+                });
+            });
+
+            section(ui, "r_data", "💾  Data collection & OTA", HUE_DATA, false, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("collect from tracker id:");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_collect_id).desired_width(50.0).hint_text("0"));
+                    if ui.button("collect").clicked() {
+                        let i = self.r_collect_id.trim().to_owned();
+                        if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("collect {i}")); }
+                    }
+                    if ui.button("collect off").clicked() { self.send_cmd("collect off".into()); }
+                    if ui.button("collect status").clicked() { self.send_cmd("collect".into()); }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("ota status").clicked() { self.send_cmd("ota".into()); }
+                    ui.separator();
+                    ui.label("ota info id:");
+                    ui.add(egui::TextEdit::singleline(&mut self.r_ota_info).desired_width(50.0).hint_text("0"));
+                    if ui.button("ota info").clicked() {
+                        let i = self.r_ota_info.trim().to_owned();
+                        if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("ota info {i}")); }
+                    }
+                    if Self::danger_button(ui, "ota abort") { self.send_cmd("ota abort".into()); }
+                });
+            });
+
+            section(ui, "r_remote", "🛰  Remote commands → tracker(s)", HUE_REMOTE, false, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Target:");
+                    ui.selectable_value(&mut self.rem_target_all, true, "All active");
+                    ui.selectable_value(&mut self.rem_target_all, false, "By ID");
+                    let allow_id_edit = !self.rem_target_all;
+                    ui.add_enabled(
+                        allow_id_edit,
+                        egui::TextEdit::singleline(&mut self.rem_target_id).desired_width(50.0).hint_text("0"),
+                    );
+                });
+
+                let target = self.remote_target();
+                ui.label(egui::RichText::new(format!("→ send {target} <command>")).color(MUTED).monospace());
+                ui.separator();
+
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("calibrate").clicked() { self.send_cmd(format!("send {target} calibrate")); }
+                    if ui.button("6-side").clicked() { self.send_cmd(format!("send {target} 6-side")); }
+                    if ui.button("scan").clicked() { self.send_cmd(format!("send {target} scan")); }
+                    if ui.button("ping").clicked() { self.send_cmd(format!("send {target} ping")); }
+                    if ui.button("meow 🐱").clicked() { self.send_cmd(format!("send {target} meow")); }
+                    if ui.button("reboot").clicked() { self.send_cmd(format!("send {target} reboot")); }
+                    if ui.button("fusion reset").clicked() { self.send_cmd(format!("send {target} fusion")); }
+                    if Self::danger_button(ui, "shutdown") { self.send_cmd(format!("send {target} shutdown")); }
+                    if Self::danger_button(ui, "clear pairing") { self.send_cmd(format!("send {target} clear")); }
+                });
+
+                ui.add_space(2.0);
+                ui.label("Magnetometer:");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("mag on").clicked() { self.send_cmd(format!("send {target} mag on")); }
+                    if ui.button("mag off").clicked() { self.send_cmd(format!("send {target} mag off")); }
+                    if ui.button("mag clear").clicked() { self.send_cmd(format!("send {target} mag clear")); }
+                    if ui.button("mag cal").clicked() { self.send_cmd(format!("send {target} mag cal")); }
+                });
+
+                ui.add_space(2.0);
+                ui.label("Reset:");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("reset zro").clicked() { self.send_cmd(format!("send {target} reset zro")); }
+                    if ui.button("reset acc").clicked() { self.send_cmd(format!("send {target} reset acc")); }
+                    if ui.button("reset bat").clicked() { self.send_cmd(format!("send {target} reset bat")); }
+                    if ui.button("reset mag").clicked() { self.send_cmd(format!("send {target} reset mag")); }
+                    if ui.button("reset tcal").clicked() { self.send_cmd(format!("send {target} reset tcal")); }
+                    if ui.button("reset fusion").clicked() { self.send_cmd(format!("send {target} reset fusion")); }
+                });
+
+                ui.add_space(2.0);
+                ui.label("Temperature calibration:");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("tcal on").clicked() { self.send_cmd(format!("send {target} tcal on")); }
+                    if ui.button("tcal off").clicked() { self.send_cmd(format!("send {target} tcal off")); }
+                    if ui.button("tcal auto on").clicked() { self.send_cmd(format!("send {target} tcal auto on")); }
+                    if ui.button("tcal auto off").clicked() { self.send_cmd(format!("send {target} tcal auto off")); }
+                    if ui.button("tcal boot on").clicked() { self.send_cmd(format!("send {target} tcal boot on")); }
+                    if ui.button("tcal boot off").clicked() { self.send_cmd(format!("send {target} tcal boot off")); }
+                    if ui.button("tcal clear").clicked() { self.send_cmd(format!("send {target} tcal clear")); }
+                });
+
+                ui.add_space(2.0);
+                ui.label("Scheduling / test / bootloader:");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("tdma on").clicked() { self.send_cmd(format!("send {target} tdma on")); }
+                    if ui.button("tdma off").clicked() { self.send_cmd(format!("send {target} tdma off")); }
+                    if ui.button("test on").clicked() { self.send_cmd(format!("send {target} test on")); }
+                    if ui.button("test off").clicked() { self.send_cmd(format!("send {target} test off")); }
+                    if Self::danger_button(ui, "dfu") { self.send_cmd(format!("send {target} dfu")); }
+                    if Self::danger_button(ui, "dfu ota") { self.send_cmd(format!("send {target} dfu ota")); }
+                });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("sens X/Y/Z:");
+                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_x).desired_width(56.0).hint_text("x"));
+                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_y).desired_width(56.0).hint_text("y"));
+                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_z).desired_width(56.0).hint_text("z"));
+                    if ui.button("send sens").clicked() {
+                        let x = self.rem_sens_x.trim().to_owned();
+                        let y = self.rem_sens_y.trim().to_owned();
+                        let z = self.rem_sens_z.trim().to_owned();
+                        if x.is_empty() || y.is_empty() || z.is_empty() {
+                            self.push_info("Enter all three sens values.".into());
+                        } else {
+                            self.send_cmd(format!("send {target} sens {x},{y},{z}"));
+                        }
+                    }
+                    if ui.button("send sens reset").clicked() { self.send_cmd(format!("send {target} sens reset")); }
+                });
+
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Channel commands apply to ALL trackers + receiver (firmware restriction):")
+                        .color(MUTED),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.rem_channel).desired_width(56.0).hint_text("25"));
+                    if ui.button("send all channel").clicked() {
+                        let c = self.rem_channel.trim().to_owned();
+                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("send all channel {c}")); }
+                    }
+                    if ui.button("send all clearchannel").clicked() { self.send_cmd("send all clearchannel".into()); }
+                });
+            });
         });
 
         ui.add_space(8.0);
