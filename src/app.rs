@@ -77,8 +77,8 @@ impl Kind {
             Kind::Tx => "» ",
             Kind::Rx => "",
             Kind::Info => "· ",
-            Kind::Warn => "⚠ ",
-            Kind::Err => "✖ ",
+            Kind::Warn => "! ",
+            Kind::Err => "x ",
         }
     }
 }
@@ -936,7 +936,7 @@ impl App {
                     let label = if self.dfu_running {
                         "Updating…"
                     } else {
-                        "⬆  Update all trackers"
+                        "Update all trackers"
                     };
                     if Self::primary(ui, !self.dfu_running, label, ACCENT_AMBER).clicked() {
                         let ctx = ui.ctx().clone();
@@ -1050,11 +1050,11 @@ impl App {
                     .as_ref()
                     .map(|c| c.port_name.clone())
                     .unwrap_or_default();
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 120), format!("● {name}"));
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 120), format!("* {name}"));
             } else if self.connection.is_some() {
-                ui.colored_label(egui::Color32::from_rgb(220, 190, 90), "◌ connecting…");
+                ui.colored_label(egui::Color32::from_rgb(220, 190, 90), "... connecting…");
             } else {
-                ui.colored_label(egui::Color32::GRAY, "○ disconnected");
+                ui.colored_label(egui::Color32::GRAY, "- disconnected");
             }
         });
 
@@ -1086,7 +1086,7 @@ impl App {
                 self.selected_port = Some(sel);
             }
 
-            if ui.button("⟳ Refresh").clicked() {
+            if ui.button("Refresh").clicked() {
                 self.refresh_ports();
             }
 
@@ -1105,7 +1105,7 @@ impl App {
 
             ui.separator();
             if self.connection.is_some() {
-                if ui.button("⏹ Disconnect").clicked() {
+                if ui.button("Disconnect").clicked() {
                     self.disconnect();
                 }
             } else {
@@ -1114,7 +1114,7 @@ impl App {
                     .add_enabled(
                         enabled,
                         egui::Button::new(
-                            egui::RichText::new("▶ Connect").strong().color(egui::Color32::WHITE),
+                            egui::RichText::new("Connect").strong().color(egui::Color32::WHITE),
                         )
                         .fill(ACCENT),
                     )
@@ -1133,8 +1133,8 @@ impl App {
         let detected = self.current_port_info().and_then(|p| p.guessed_mode);
         ui.horizontal(|ui| {
             ui.label("Mode:");
-            ui.selectable_value(&mut self.mode, Mode::Tracker, "🛰  Tracker");
-            ui.selectable_value(&mut self.mode, Mode::Receiver, "📡  Receiver");
+            ui.selectable_value(&mut self.mode, Mode::Tracker, "Tracker");
+            ui.selectable_value(&mut self.mode, Mode::Receiver, "Receiver");
             if let Some(m) = detected {
                 ui.separator();
                 ui.label(egui::RichText::new(format!("auto-detected: {}", m.label())).weak());
@@ -1275,7 +1275,7 @@ impl App {
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "🧭  Calibrate", ACCENT)
+                    if Self::primary(ui, en, "Calibrate", ACCENT)
                         .on_hover_text("Sends: calibrate")
                         .clicked()
                     {
@@ -1285,7 +1285,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "🔗  Pair", ACCENT)
+                    if Self::primary(ui, en, "Pair", ACCENT)
                         .on_hover_text("Sends: pair")
                         .clicked()
                     {
@@ -1295,7 +1295,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "⬆  Update (DFU)", ACCENT_AMBER)
+                    if Self::primary(ui, en, "Update (DFU)", ACCENT_AMBER)
                         .on_hover_text("Sends: dfu")
                         .clicked()
                     {
@@ -1315,7 +1315,7 @@ impl App {
         ui.add_space(2.0);
 
         ui.add_enabled_ui(en, |ui| {
-            section(ui, "t_info", "📋  Device information", HUE_INFO, true, |ui| {
+            section(ui, "t_info", "Device information", HUE_INFO, true, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("info").on_hover_text("Firmware version, IDs and current settings").clicked() { self.send_cmd("info".into()); }
                     if ui.button("uptime").on_hover_text("Time since the tracker last booted").clicked() { self.send_cmd("uptime".into()); }
@@ -1323,11 +1323,11 @@ impl App {
                     if ui.button("nvs").on_hover_text("Dump stored non-volatile settings (NVS)").clicked() { self.send_cmd("nvs".into()); }
                     if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
                     if ui.button("ping").on_hover_text("Check the tracker is alive and responding").clicked() { self.send_cmd("ping".into()); }
-                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd("meow".into()); }
+                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd("meow".into()); }
                 });
             });
 
-            section(ui, "t_sensor", "🎛  Sensors & calibration", HUE_SENSOR, false, |ui| {
+            section(ui, "t_sensor", "Sensors & calibration", HUE_SENSOR, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("scan").on_hover_text("Detect and identify the attached IMU(s)").clicked() { self.send_cmd("scan".into()); }
                     if ui.button("calibrate (ZRO)").on_hover_text("Zero the gyroscope — keep the tracker flat and still").clicked() { self.send_cmd("calibrate".into()); }
@@ -1336,34 +1336,42 @@ impl App {
                     if ui.button("range reset").on_hover_text("Restore the default IMU full-scale range").clicked() { self.send_cmd("range reset".into()); }
                 });
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("debug duration (1–60 s):");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
-                    if ui.button("debug").on_hover_text("Stream raw sensor data for N seconds (1–60)").clicked() {
-                        let d = self.t_debug_dur.trim().to_owned();
-                        if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("gyro sensitivity (deg diff) X/Y/Z:");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
-                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
-                    ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
-                    if ui.button("set sens").on_hover_text("Set per-axis gyro sensitivity correction").clicked() {
-                        let x = self.t_sens_x.trim().to_owned();
-                        let y = self.t_sens_y.trim().to_owned();
-                        let z = self.t_sens_z.trim().to_owned();
-                        if x.is_empty() || y.is_empty() || z.is_empty() {
-                            self.push_info("Enter all three sens values (X, Y, Z).".into());
-                        } else {
-                            self.send_cmd(format!("sens {x},{y},{z}"));
-                        }
-                    }
-                    if ui.button("sens reset").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("sens reset".into()); }
-                });
+                egui::Grid::new("t_sensor_params")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("debug duration (1–60 s):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
+                            if ui.button("debug").on_hover_text("Stream raw sensor data for N seconds (1–60)").clicked() {
+                                let d = self.t_debug_dur.trim().to_owned();
+                                if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("gyro sensitivity (deg diff) X/Y/Z:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
+                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
+                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
+                            if ui.button("set sens").on_hover_text("Set per-axis gyro sensitivity correction").clicked() {
+                                let x = self.t_sens_x.trim().to_owned();
+                                let y = self.t_sens_y.trim().to_owned();
+                                let z = self.t_sens_z.trim().to_owned();
+                                if x.is_empty() || y.is_empty() || z.is_empty() {
+                                    self.push_info("Enter all three sens values (X, Y, Z).".into());
+                                } else {
+                                    self.send_cmd(format!("sens {x},{y},{z}"));
+                                }
+                            }
+                            if ui.button("sens reset").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("sens reset".into()); }
+                        });
+                        ui.end_row();
+                    });
             });
 
-            section(ui, "t_mag", "🧭  Magnetometer", HUE_MAG, false, |ui| {
+            section(ui, "t_mag", "Magnetometer", HUE_MAG, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("status (mag)").on_hover_text("Show magnetometer state").clicked() { self.send_cmd("mag".into()); }
                     if ui.button("mag on").on_hover_text("Enable the magnetometer for heading correction").clicked() { self.send_cmd("mag on".into()); }
@@ -1373,7 +1381,7 @@ impl App {
                 });
             });
 
-            section(ui, "t_tcal", "🌡  Temperature calibration (tcal)", HUE_TEMP, false, |ui| {
+            section(ui, "t_tcal", "Temperature calibration (tcal)", HUE_TEMP, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("tcal status").on_hover_text("Show temperature-calibration state").clicked() { self.send_cmd("tcal status".into()); }
                     if ui.button("tcal on").on_hover_text("Enable temperature compensation").clicked() { self.send_cmd("tcal on".into()); }
@@ -1388,32 +1396,33 @@ impl App {
                     if ui.button("tcal boot on").on_hover_text("Recalibrate temperature on every boot").clicked() { self.send_cmd("tcal boot on".into()); }
                     if ui.button("tcal boot off").on_hover_text("Don't recalibrate temperature on boot").clicked() { self.send_cmd("tcal boot off".into()); }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("test temp (°C):");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
-                    if ui.button("tcal test").on_hover_text("Predict the gyro offset at a given temperature (°C)").clicked() {
-                        let t = self.t_tcal_test.trim().to_owned();
-                        if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
-                    }
-                    ui.separator();
-                    ui.label("remove index:");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
-                    if ui.button("tcal remove").on_hover_text("Delete one temperature-calibration sample by index").clicked() {
-                        let i = self.t_tcal_remove.trim().to_owned();
-                        if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
-                    }
-                });
+                egui::Grid::new("t_tcal_params")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("test temp (°C):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
+                            if ui.button("tcal test").on_hover_text("Predict the gyro offset at a given temperature (°C)").clicked() {
+                                let t = self.t_tcal_test.trim().to_owned();
+                                if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("remove sample index:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
+                            if ui.button("tcal remove").on_hover_text("Delete one temperature-calibration sample by index").clicked() {
+                                let i = self.t_tcal_remove.trim().to_owned();
+                                if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
+                            }
+                        });
+                        ui.end_row();
+                    });
             });
 
-            section(ui, "t_conn", "🔗  Connection & pairing", HUE_CONN, false, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("receiver address (16 hex):");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
-                    if ui.button("set").on_hover_text("Bond to a receiver by its 16 hex-digit address").clicked() {
-                        let a = self.t_set_addr.trim().to_owned();
-                        if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
-                    }
-                });
+            section(ui, "t_conn", "Connection & pairing", HUE_CONN, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("pair").on_hover_text("Enter pairing mode to bond with a receiver").clicked() { self.send_cmd("pair".into()); }
                     if Self::danger_button(ui, "clear pairing", "Forget the paired receiver") { self.send_cmd("clear".into()); }
@@ -1421,18 +1430,35 @@ impl App {
                     if ui.button("tdma on").on_hover_text("Enable TDMA time-slotted radio scheduling").clicked() { self.send_cmd("tdma on".into()); }
                     if ui.button("tdma off").on_hover_text("Disable TDMA scheduling").clicked() { self.send_cmd("tdma off".into()); }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("RF channel (1–100):");
-                    ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("set channel").on_hover_text("Set the RF channel (1–100)").clicked() {
-                        let c = self.t_channel.trim().to_owned();
-                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
-                    }
-                    if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
-                });
+                ui.add_space(4.0);
+                egui::Grid::new("t_conn_params")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("receiver address (16 hex):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
+                            if ui.button("set").on_hover_text("Bond to a receiver by its 16 hex-digit address").clicked() {
+                                let a = self.t_set_addr.trim().to_owned();
+                                if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("RF channel (1–100):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
+                            if ui.button("set channel").on_hover_text("Set the RF channel (1–100)").clicked() {
+                                let c = self.t_channel.trim().to_owned();
+                                if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
+                            }
+                            if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
+                        });
+                        ui.end_row();
+                    });
             });
 
-            section(ui, "t_system", "⚙  System", HUE_SYSTEM, false, |ui| {
+            section(ui, "t_system", "System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("reboot").on_hover_text("Restart the tracker firmware").clicked() { self.send_cmd("reboot".into()); }
                     if Self::danger_button(ui, "shutdown", "Power the tracker off") { self.send_cmd("shutdown".into()); }
@@ -1441,7 +1467,7 @@ impl App {
                 });
             });
 
-            section(ui, "t_reset", "♻  Reset / clear (careful)", HUE_RESET, false, |ui| {
+            section(ui, "t_reset", "Reset / clear (careful)", HUE_RESET, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("reset zro").on_hover_text("Clear the stored gyroscope zero offset").clicked() { self.send_cmd("reset zro".into()); }
                     if ui.button("reset acc").on_hover_text("Clear the accelerometer calibration").clicked() { self.send_cmd("reset acc".into()); }
@@ -1454,7 +1480,7 @@ impl App {
                 });
             });
 
-            section(ui, "t_test", "🧪  Test mode", HUE_TEST, false, |ui| {
+            section(ui, "t_test", "Test mode", HUE_TEST, false, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("test on").on_hover_text("Enter test / diagnostic mode").clicked() { self.send_cmd("test on".into()); }
                     if ui.button("test off").on_hover_text("Leave test mode").clicked() { self.send_cmd("test off".into()); }
@@ -1479,7 +1505,7 @@ impl App {
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "🔗  Pair a tracker", ACCENT)
+                    if Self::primary(ui, en, "Pair a tracker", ACCENT)
                         .on_hover_text("Sends: pair")
                         .clicked()
                     {
@@ -1489,7 +1515,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "🧭  Calibrate all", ACCENT)
+                    if Self::primary(ui, en, "Calibrate all", ACCENT)
                         .on_hover_text("Sends: send all calibrate")
                         .clicked()
                     {
@@ -1499,7 +1525,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "⬆  Update (DFU)", ACCENT_AMBER)
+                    if Self::primary(ui, en, "Update (DFU)", ACCENT_AMBER)
                         .on_hover_text("Sends: dfu")
                         .clicked()
                     {
@@ -1516,41 +1542,50 @@ impl App {
         ui.add_space(2.0);
 
         ui.add_enabled_ui(en, |ui| {
-            section(ui, "r_info", "📋  Device information", HUE_INFO, true, |ui| {
+            section(ui, "r_info", "Device information", HUE_INFO, true, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("info").on_hover_text("Firmware version, IDs and settings").clicked() { self.send_cmd("info".into()); }
                     if ui.button("uptime").on_hover_text("Time since the receiver booted").clicked() { self.send_cmd("uptime".into()); }
                     if ui.button("list (paired)").on_hover_text("List bonded trackers and their slots").clicked() { self.send_cmd("list".into()); }
                     if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
-                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd("meow".into()); }
+                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd("meow".into()); }
                 });
             });
 
-            section(ui, "r_paired", "🔗  Paired devices", HUE_CONN, false, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("add address (12 hex):");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
-                    if ui.button("add").on_hover_text("Manually bond a tracker by its 12 hex-digit address").clicked() {
-                        let a = self.r_add_addr.trim().to_owned();
-                        if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("pair count (blank = until timeout):");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
-                    if ui.button("pair").on_hover_text("Listen for trackers in pairing mode (optionally a fixed count)").clicked() {
-                        let c = self.r_pair_count.trim().to_owned();
-                        if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
-                    }
-                    if ui.button("exit pairing").on_hover_text("Stop listening for new trackers").clicked() { self.send_cmd("exit".into()); }
-                });
+            section(ui, "r_paired", "Paired devices", HUE_CONN, false, |ui| {
+                egui::Grid::new("r_paired_params")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("add address (12 hex):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
+                            if ui.button("add").on_hover_text("Manually bond a tracker by its 12 hex-digit address").clicked() {
+                                let a = self.r_add_addr.trim().to_owned();
+                                if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("pair count (blank = until timeout):");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
+                            if ui.button("pair").on_hover_text("Listen for trackers in pairing mode (optionally a fixed count)").clicked() {
+                                let c = self.r_pair_count.trim().to_owned();
+                                if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
+                            }
+                            if ui.button("exit pairing").on_hover_text("Stop listening for new trackers").clicked() { self.send_cmd("exit".into()); }
+                        });
+                        ui.end_row();
+                    });
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("remove last").on_hover_text("Unbond the most recently added tracker").clicked() { self.send_cmd("remove".into()); }
                     if Self::danger_button(ui, "clear all pairings", "Forget every bonded tracker") { self.send_cmd("clear".into()); }
                 });
             });
 
-            section(ui, "r_stats", "📊  Statistics", HUE_STATS, false, |ui| {
+            section(ui, "r_stats", "Statistics", HUE_STATS, false, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("stats (toggle)").on_hover_text("Toggle live link-statistics output").clicked() { self.send_cmd("stats".into()); }
                     ui.separator();
@@ -1564,7 +1599,7 @@ impl App {
                 });
             });
 
-            section(ui, "r_channel", "📡  RF channel (local receiver)", HUE_SENSOR, false, |ui| {
+            section(ui, "r_channel", "RF channel (local receiver)", HUE_SENSOR, false, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("channel (1–100):");
                     ui.add(egui::TextEdit::singleline(&mut self.r_channel).desired_width(56.0).hint_text("25"));
@@ -1578,7 +1613,7 @@ impl App {
                 });
             });
 
-            section(ui, "r_system", "⚙  System", HUE_SYSTEM, false, |ui| {
+            section(ui, "r_system", "System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("reboot").on_hover_text("Restart the receiver firmware").clicked() { self.send_cmd("reboot".into()); }
                     if Self::danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
@@ -1586,7 +1621,7 @@ impl App {
                 });
             });
 
-            section(ui, "r_data", "💾  Data collection & OTA", HUE_DATA, false, |ui| {
+            section(ui, "r_data", "Data collection & OTA", HUE_DATA, false, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("collect from tracker id:");
                     ui.add(egui::TextEdit::singleline(&mut self.r_collect_id).desired_width(50.0).hint_text("0"));
@@ -1610,7 +1645,7 @@ impl App {
                 });
             });
 
-            section(ui, "r_remote", "🛰  Remote commands → tracker(s)", HUE_REMOTE, false, |ui| {
+            section(ui, "r_remote", "Remote commands → tracker(s)", HUE_REMOTE, false, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Target:");
                     ui.selectable_value(&mut self.rem_target_all, true, "All active");
@@ -1631,7 +1666,7 @@ impl App {
                     if ui.button("6-side").on_hover_text("Six-sided accel calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} 6-side")); }
                     if ui.button("scan").on_hover_text("Re-detect the IMU on the target(s)").clicked() { self.send_cmd(format!("send {target} scan")); }
                     if ui.button("ping").on_hover_text("Check the target tracker(s) respond").clicked() { self.send_cmd(format!("send {target} ping")); }
-                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd(format!("send {target} meow")); }
+                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd(format!("send {target} meow")); }
                     if ui.button("reboot").on_hover_text("Restart the target tracker(s)").clicked() { self.send_cmd(format!("send {target} reboot")); }
                     if ui.button("fusion reset").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} fusion")); }
                     if Self::danger_button(ui, "shutdown", "Power off the target tracker(s)") { self.send_cmd(format!("send {target} shutdown")); }
@@ -1749,7 +1784,7 @@ impl eframe::App for App {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new("①")
+                                        egui::RichText::new("1")
                                             .size(18.0)
                                             .strong()
                                             .color(ACCENT_AMBER),
