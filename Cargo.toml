@@ -16,6 +16,17 @@ serialport = "4.9"
 # XDG desktop portal by default (no GTK build- or run-time dependency), so it works
 # on KDE/Wayland/etc. out of the box.
 rfd = "0.17"
+# Reading Nordic nRF DFU .zip packages (manifest.json + .dat/.bin) for the receiver
+# secure-DFU-over-serial flasher.
+zip = { version = "5.1", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Parsing Intel HEX firmware so the receiver can be flashed directly from a .hex
+# (we build the Nordic DFU init packet in-app, no nrfutil/nRF Connect needed).
+ihex = "3"
+# SHA-256 for the DFU init packet's firmware hash (the bootloader validates the
+# image against it). RustCrypto; pinned to the long-stable 0.10 line.
+sha2 = "0.10"
 
 [build-dependencies]
 # Embeds the .ico into the Windows .exe (see build.rs). Kept unconditional rather

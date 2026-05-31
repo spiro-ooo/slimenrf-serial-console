@@ -3,6 +3,7 @@
 
 mod app;
 mod dfu;
+mod nrfdfu;
 mod serial;
 
 use app::App;

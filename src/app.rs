@@ -10,6 +10,7 @@
 //! guided to connect first. The console renders ANSI-coloured firmware output and
 //! can filter sent lines, warnings, and errors independently.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -20,6 +21,7 @@ use eframe::egui;
 use crate::dfu::{
     drive_key_set, find_uf2_drives, run_dfu_update, DfuProgress,
 };
+use crate::nrfdfu::{run_receiver_dfu, NrfProgress};
 use crate::serial::{list_ports, run_worker, FromWorker, Mode, PortInfo, ToWorker};
 
 // ---- palette ---------------------------------------------------------------
@@ -338,6 +340,16 @@ pub struct App {
     dfu_running: bool,
     dfu_log: Vec<(DfuLevel, String)>,
     dfu_result: Option<(usize, usize)>,
+
+    // Receiver firmware updater (nRF secure DFU over serial).
+    rdfu_package: String,
+    rdfu_rx: Option<mpsc::Receiver<NrfProgress>>,
+    rdfu_running: bool,
+    rdfu_log: Vec<(DfuLevel, String)>,
+    rdfu_result: Option<(usize, usize)>,
+    rdfu_total: usize,
+    rdfu_done: usize,
+    rdfu_sd_req: String,
 }
 
 /// Severity for a line in the DFU progress log (styling only).
@@ -390,6 +402,14 @@ impl Default for App {
             dfu_running: false,
             dfu_log: Vec::new(),
             dfu_result: None,
+            rdfu_package: String::new(),
+            rdfu_rx: None,
+            rdfu_running: false,
+            rdfu_log: Vec::new(),
+            rdfu_result: None,
+            rdfu_total: 0,
+            rdfu_done: 0,
+            rdfu_sd_req: "0x00".to_owned(),
         }
     }
 }
@@ -986,6 +1006,352 @@ impl App {
             });
     }
 
+    // ---- receiver firmware update (nRF secure DFU over serial) -------------
+
+    fn receiver_ports(&self) -> Vec<String> {
+        self.ports
+            .iter()
+            .filter(|p| {
+                p.guessed_mode == Some(Mode::Receiver)
+                    || p.bootloader == Some(crate::serial::BootloaderKind::NordicDfu)
+            })
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    fn rdfu_log_push(&mut self, level: DfuLevel, msg: String) {
+        self.rdfu_log.push((level, msg));
+        const MAX: usize = 400;
+        if self.rdfu_log.len() > MAX {
+            let excess = self.rdfu_log.len() - MAX;
+            self.rdfu_log.drain(0..excess);
+        }
+    }
+
+    fn poll_rdfu(&mut self) {
+        let mut events = Vec::new();
+        let mut closed = false;
+        if let Some(rx) = &self.rdfu_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(e) => events.push(e),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for e in events {
+            match e {
+                NrfProgress::Status(s) => self.rdfu_log_push(DfuLevel::Info, s),
+                NrfProgress::PortTriggered { port, ok } => {
+                    if ok {
+                        self.rdfu_log_push(DfuLevel::Good, format!("{port}: entering bootloader"));
+                    } else {
+                        self.rdfu_log_push(
+                            DfuLevel::Warn,
+                            format!("{port}: could not send dfu (already in bootloader?)"),
+                        );
+                    }
+                }
+                NrfProgress::DeviceReady { port } => {
+                    self.rdfu_log_push(DfuLevel::Info, format!("{port}: bootloader ready, flashing…"));
+                }
+                NrfProgress::Total { bytes } => {
+                    self.rdfu_total = bytes;
+                    self.rdfu_done = 0;
+                }
+                NrfProgress::Advance { bytes } => {
+                    self.rdfu_done = self.rdfu_done.saturating_add(bytes);
+                }
+                NrfProgress::Flashed { port } => {
+                    self.rdfu_log_push(DfuLevel::Good, format!("{port}: flash complete"));
+                }
+                NrfProgress::Warn(s) => self.rdfu_log_push(DfuLevel::Warn, s),
+                NrfProgress::Finished { flashed, expected } => {
+                    self.rdfu_result = Some((flashed, expected));
+                    self.rdfu_running = false;
+                    let lvl = if flashed == expected && expected > 0 {
+                        DfuLevel::Good
+                    } else {
+                        DfuLevel::Warn
+                    };
+                    self.rdfu_log_push(lvl, format!("Done — flashed {flashed} of {expected} receiver(s)."));
+                }
+            }
+        }
+
+        if closed {
+            self.rdfu_rx = None;
+            if self.rdfu_running {
+                self.rdfu_running = false;
+            }
+        }
+    }
+
+    fn start_rdfu_update(&mut self, ctx: &egui::Context) {
+        if self.rdfu_running {
+            return;
+        }
+        let pkg = self.rdfu_package.trim().to_owned();
+        if pkg.is_empty() {
+            self.rdfu_log_push(DfuLevel::Warn, "Choose a Nordic DFU .zip package first.".to_owned());
+            return;
+        }
+        let pkg_path = PathBuf::from(&pkg);
+        if !pkg_path.is_file() {
+            self.rdfu_log_push(DfuLevel::Warn, format!("File not found: {pkg}"));
+            return;
+        }
+        let ext = pkg_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "zip" && ext != "hex" {
+            self.rdfu_log_push(
+                DfuLevel::Warn,
+                "Receiver firmware must be a .hex or a Nordic DFU .zip.".to_owned(),
+            );
+            return;
+        }
+
+        let mut ports = self.receiver_ports();
+        let already: HashSet<String> = self
+            .ports
+            .iter()
+            .filter(|p| p.bootloader == Some(crate::serial::BootloaderKind::NordicDfu))
+            .map(|p| p.name.clone())
+            .collect();
+        for p in &already {
+            if !ports.contains(p) {
+                ports.push(p.clone());
+            }
+        }
+
+        if ports.is_empty() {
+            self.rdfu_log_push(
+                DfuLevel::Warn,
+                "No receiver detected. Plug in the receiver dongle (or a board already in DFU)."
+                    .to_owned(),
+            );
+            return;
+        }
+
+        if self.connection.is_some() {
+            self.disconnect();
+        }
+
+        self.rdfu_log.clear();
+        self.rdfu_result = None;
+        self.rdfu_total = 0;
+        self.rdfu_done = 0;
+        self.rdfu_running = true;
+        self.rdfu_log_push(
+            DfuLevel::Info,
+            format!("Starting receiver update on {} port(s).", ports.len()),
+        );
+
+        let (tx, rx) = mpsc::channel::<NrfProgress>();
+        self.rdfu_rx = Some(rx);
+        let line_ending: &'static str = if self.line_ending_crlf { "\r\n" } else { "\n" };
+
+        // Parse the SoftDevice requirement field: comma-separated, hex (0x..) or
+        // decimal. Empty or unparseable falls back to [0x00] (no SoftDevice).
+        let sd_req: Vec<u16> = {
+            let parsed: Vec<u16> = self
+                .rdfu_sd_req
+                .split(',')
+                .filter_map(|tok| {
+                    let t = tok.trim();
+                    if t.is_empty() {
+                        return None;
+                    }
+                    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+                        u16::from_str_radix(hex, 16).ok()
+                    } else {
+                        t.parse::<u16>().ok()
+                    }
+                })
+                .collect();
+            if parsed.is_empty() {
+                vec![0x0000]
+            } else {
+                parsed
+            }
+        };
+
+        let ctx2 = ctx.clone();
+
+        let spawned = thread::Builder::new()
+            .name("nrf-dfu-worker".to_owned())
+            .spawn(move || {
+                run_receiver_dfu(ports, already, pkg_path, sd_req, line_ending, tx, ctx2);
+            });
+
+        if let Err(e) = spawned {
+            self.rdfu_running = false;
+            self.rdfu_rx = None;
+            self.rdfu_log_push(DfuLevel::Warn, format!("Could not start updater: {e}"));
+        }
+    }
+
+    /// The "Update receiver firmware" card (receiver mode only).
+    fn rdfu_update_card(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style())
+            .fill(CARD_BG)
+            .stroke(egui::Stroke::new(1.0, darken(ACCENT_AMBER, 0.45)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("UPDATE RECEIVER FIRMWARE")
+                            .size(13.0)
+                            .strong()
+                            .color(MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let n = self.receiver_ports().len();
+                        ui.label(
+                            egui::RichText::new(if n == 1 {
+                                "1 receiver detected".to_owned()
+                            } else {
+                                format!("{n} receivers detected")
+                            })
+                            .color(MUTED),
+                        );
+                    });
+                });
+                Self::desc(
+                    ui,
+                    "Flashes the receiver dongle over Nordic secure DFU — no nRF Connect needed. \
+                     Pick the firmware: a .hex (the init packet is built for you) or a Nordic DFU \
+                     .zip, then click Flash.",
+                );
+                ui.add_space(2.0);
+                Self::desc(
+                    ui,
+                    "Putting the dongle in DFU: the \"dfu\" command is unreliable on some hardware, so \
+                     the dependable way is the button — hold the receiver's button down for ~10 seconds \
+                     until its LED changes, or hold the button while plugging it in. Once it's in DFU \
+                     this panel detects it automatically (it'll read \"1 receiver detected\" and the \
+                     device line will say \"in DFU mode\").",
+                );
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Firmware:");
+                    let avail = ui.available_width();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rdfu_package)
+                            .desired_width((avail - 96.0).max(120.0))
+                            .hint_text("path to firmware .hex or .zip"),
+                    );
+                    if ui.add_enabled(!self.rdfu_running, egui::Button::new("Browse…")).clicked() {
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter("Receiver firmware (.hex / DFU .zip)", &["hex", "zip"])
+                            .set_title("Select receiver firmware");
+                        let cur = self.rdfu_package.trim().to_owned();
+                        if !cur.is_empty() {
+                            if let Some(parent) = PathBuf::from(&cur).parent() {
+                                if parent.is_dir() {
+                                    dlg = dlg.set_directory(parent);
+                                }
+                            }
+                        }
+                        if let Some(path) = dlg.pick_file() {
+                            self.rdfu_package = path.display().to_string();
+                        }
+                    }
+                });
+
+                // Advanced: SoftDevice requirement (only used when flashing a .hex).
+                // Default 0x00 = no SoftDevice, correct for the ESB-based receiver.
+                let is_hex = self
+                    .rdfu_package
+                    .trim()
+                    .to_ascii_lowercase()
+                    .ends_with(".hex");
+                if is_hex {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("SoftDevice req:").color(MUTED));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rdfu_sd_req)
+                                .desired_width(120.0)
+                                .hint_text("0x00"),
+                        )
+                        .on_hover_text(
+                            "Advanced — leave this at 0x00. It's the SoftDevice firmware-ID the image \
+                             requires; the bootloader rejects a mismatch (error 0x07). This receiver has \
+                             no SoftDevice, so 0x00 is correct and you shouldn't need to change it. Only \
+                             touch this if flashing fails with error 0x07.",
+                        );
+                        ui.label(
+                            egui::RichText::new("leave at 0x00 (this receiver has no SoftDevice)")
+                                .color(MUTED)
+                                .small(),
+                        );
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let label = if self.rdfu_running { "Updating…" } else { "Flash receiver" };
+                    if Self::primary(ui, !self.rdfu_running, label, ACCENT_AMBER).clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.start_rdfu_update(&ctx);
+                    }
+                    if self.rdfu_running {
+                        ui.add(egui::Spinner::new());
+                    }
+                    if !self.rdfu_running && !self.rdfu_log.is_empty() {
+                        if ui.button("Clear log").clicked() {
+                            self.rdfu_log.clear();
+                            self.rdfu_result = None;
+                        }
+                    }
+                });
+
+                if self.rdfu_running && self.rdfu_total > 0 {
+                    let frac = (self.rdfu_done as f32 / self.rdfu_total as f32).clamp(0.0, 1.0);
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .show_percentage()
+                            .desired_width(ui.available_width()),
+                    );
+                }
+
+                if !self.rdfu_log.is_empty() {
+                    ui.add_space(6.0);
+                    egui::Frame::group(ui.style())
+                        .fill(egui::Color32::from_rgb(24, 27, 34))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .auto_shrink([false, true])
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    for (lvl, msg) in &self.rdfu_log {
+                                        let color = match lvl {
+                                            DfuLevel::Info => MUTED,
+                                            DfuLevel::Good => egui::Color32::from_rgb(120, 200, 130),
+                                            DfuLevel::Warn => egui::Color32::from_rgb(222, 180, 90),
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(msg)
+                                                .color(color)
+                                                .font(egui::FontId::monospace(12.0)),
+                                        );
+                                    }
+                                });
+                        });
+                }
+            });
+    }
+
     /// The current `send` target string (`"all"` or a tracker id).
     fn remote_target(&self) -> String {
         if self.rem_target_all {
@@ -1070,7 +1436,7 @@ impl App {
                     p.name.clone(),
                     p.label(),
                     p.ids(),
-                    p.guessed_mode.is_some() || p.in_bootloader,
+                    p.guessed_mode.is_some() || p.in_bootloader(),
                 )
             })
             .collect();
@@ -1170,7 +1536,7 @@ impl App {
             let name = info.display_name();
             let ids = info.ids();
             let serial = info.serial_number.clone();
-            let boot = info.in_bootloader;
+            let boot = info.bootloader;
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Device:").color(MUTED));
                 ui.label(egui::RichText::new(name).strong());
@@ -1181,13 +1547,24 @@ impl App {
                     }
                 }
             });
-            if boot {
-                ui.label(
-                    egui::RichText::new(
-                        "This port is a board in UF2 bootloader mode — use the firmware updater, not the console.",
-                    )
-                    .color(ACCENT_AMBER),
-                );
+            match boot {
+                Some(crate::serial::BootloaderKind::NordicDfu) => {
+                    ui.label(
+                        egui::RichText::new(
+                            "Receiver is in DFU mode — use the \"Update receiver firmware\" panel below. (The serial console won't respond here.)",
+                        )
+                        .color(ACCENT_AMBER),
+                    );
+                }
+                Some(crate::serial::BootloaderKind::Uf2) => {
+                    ui.label(
+                        egui::RichText::new(
+                            "This board is in UF2 bootloader mode — use the firmware updater, not the console.",
+                        )
+                        .color(ACCENT_AMBER),
+                    );
+                }
+                None => {}
             }
         }
 
@@ -1581,11 +1958,15 @@ impl App {
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Reboot the receiver into its bootloader, then flash with an external tool. \
-                        If it re-appears as a USB drive, drag a .uf2 onto it; if not, it uses nRF DFU — flash the \
-                        .zip/.hex with nRF Connect or nrfutil. (The 'Update all trackers' tool does not flash the receiver.)");
+                    Self::desc(ui, "Tries to reboot the receiver into its bootloader by command — but \
+                        this is unreliable on some hardware. The dependable way is the button: hold it \
+                        ~10 s until the LED changes, or hold it while plugging in. Then flash from the \
+                        \"Update receiver firmware\" panel below.");
                 });
             });
+
+        ui.add_space(10.0);
+        self.rdfu_update_card(ui);
 
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
@@ -1813,6 +2194,7 @@ impl eframe::App for App {
 
         self.poll();
         self.poll_dfu();
+        self.poll_rdfu();
 
         egui::Panel::top("connection_bar").show_inside(ui, |ui| {
             self.connection_bar(ui, &ctx);
@@ -1859,7 +2241,7 @@ impl eframe::App for App {
                 });
         });
 
-        if self.connection.is_some() || self.dfu_running {
+        if self.connection.is_some() || self.dfu_running || self.rdfu_running {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
     }

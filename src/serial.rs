@@ -40,6 +40,22 @@ pub const TRACKER_PID: u16 = 0x7692;
 /// sitting in the bootloader, not running firmware.
 pub const ADAFRUIT_VID: u16 = 0x239A;
 
+/// Nordic Semiconductor's USB vendor ID. The Nordic Open / secure DFU bootloader
+/// (used by the nRF52840 dongle and Holyiot dongles) enumerates as 0x1915:0x521F
+/// ("Open DFU Bootloader") while waiting for a serial DFU image.
+pub const NORDIC_VID: u16 = 0x1915;
+pub const NORDIC_DFU_PID: u16 = 0x521F;
+
+/// If a port is a board sitting in a bootloader, which kind — so the UI can route
+/// it to the right flasher (UF2 drive-copy vs Nordic serial DFU).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BootloaderKind {
+    /// Adafruit UF2 bootloader (CDC + mass storage). Tracker / UF2 boards.
+    Uf2,
+    /// Nordic Open / secure DFU bootloader over serial. Receiver dongles.
+    NordicDfu,
+}
+
 /// A serial port discovered on the system, with USB metadata when available.
 #[derive(Clone, Debug)]
 pub struct PortInfo {
@@ -50,19 +66,30 @@ pub struct PortInfo {
     pub manufacturer: Option<String>,
     pub serial_number: Option<String>,
     pub guessed_mode: Option<Mode>,
-    /// True if this port looks like a board sitting in the UF2 (Adafruit) bootloader.
-    pub in_bootloader: bool,
+    /// `Some(kind)` if this port looks like a board sitting in a bootloader.
+    pub bootloader: Option<BootloaderKind>,
 }
 
 impl PortInfo {
+    /// True if this port is a board in any bootloader/DFU mode.
+    pub fn in_bootloader(&self) -> bool {
+        self.bootloader.is_some()
+    }
+
     /// The most human-readable name available for this port: the USB product
     /// string if present, otherwise the manufacturer, otherwise a generic label.
     pub fn display_name(&self) -> String {
-        if self.in_bootloader {
-            return match &self.product {
-                Some(p) => format!("{p} (bootloader / DFU)"),
-                None => "Device in bootloader / DFU".to_owned(),
-            };
+        match self.bootloader {
+            Some(BootloaderKind::NordicDfu) => {
+                return "Nordic Open DFU bootloader (receiver)".to_owned()
+            }
+            Some(BootloaderKind::Uf2) => {
+                return match &self.product {
+                    Some(p) => format!("{p} (UF2 bootloader)"),
+                    None => "UF2 bootloader".to_owned(),
+                }
+            }
+            None => {}
         }
         if let Some(prod) = &self.product {
             prod.clone()
@@ -111,7 +138,17 @@ pub fn list_ports() -> Vec<PortInfo> {
             _ => (None, None, None, None, None),
         };
 
-        let in_bootloader = vid == Some(ADAFRUIT_VID);
+        let bootloader = if vid == Some(NORDIC_VID) && pid == Some(NORDIC_DFU_PID) {
+            Some(BootloaderKind::NordicDfu)
+        } else if vid == Some(NORDIC_VID) {
+            // Any other Nordic-VID serial device in this context is most likely the
+            // DFU bootloader too (some builds report a different PID).
+            Some(BootloaderKind::NordicDfu)
+        } else if vid == Some(ADAFRUIT_VID) {
+            Some(BootloaderKind::Uf2)
+        } else {
+            None
+        };
         let guessed_mode = guess_mode(vid, pid, product.as_deref());
 
         out.push(PortInfo {
@@ -122,15 +159,16 @@ pub fn list_ports() -> Vec<PortInfo> {
             manufacturer,
             serial_number,
             guessed_mode,
-            in_bootloader,
+            bootloader,
         });
     }
 
-    // Recognised SlimeNRF devices first, then alphabetical by port name.
+    // Recognised SlimeNRF devices and boards in DFU first, then alphabetical.
     out.sort_by(|a, b| {
-        b.guessed_mode
-            .is_some()
-            .cmp(&a.guessed_mode.is_some())
+        let a_known = a.guessed_mode.is_some() || a.in_bootloader();
+        let b_known = b.guessed_mode.is_some() || b.in_bootloader();
+        b_known
+            .cmp(&a_known)
             .then_with(|| a.name.cmp(&b.name))
     });
     out
