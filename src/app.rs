@@ -486,6 +486,19 @@ impl App {
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
+
+        // Explicit type scale. egui's defaults run small and flat for a dense control
+        // panel; this lifts body text and gives headings / buttons a clear step up.
+        use egui::{FontFamily, FontId, TextStyle};
+        style.text_styles = [
+            (TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional)),
+            (TextStyle::Body, FontId::new(15.0, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(14.5, FontFamily::Proportional)),
+            (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
+            (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        ]
+        .into();
+
         cc.egui_ctx.set_global_style(style);
 
         let mut app = App::default();
@@ -1005,11 +1018,12 @@ impl App {
         )
     }
 
-    /// A red-filled button for destructive / reboot / DFU actions.
-    fn danger_button(ui: &mut egui::Ui, text: &str) -> bool {
+    /// A red-filled button for destructive / reboot / DFU actions, with a tooltip.
+    fn danger_button(ui: &mut egui::Ui, text: &str, tip: &str) -> bool {
         ui.add(
             egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE)).fill(DANGER),
         )
+        .on_hover_text(tip)
         .clicked()
     }
 
@@ -1143,6 +1157,7 @@ impl App {
                     }
                 });
             });
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Show:").color(MUTED));
                 ui.checkbox(&mut self.show_tx, "sent")
@@ -1194,6 +1209,9 @@ impl App {
                 .auto_shrink([false, false])
                 .stick_to_bottom(self.autoscroll)
                 .show(ui, |ui| {
+                    // Tighter, terminal-like line spacing than the global default,
+                    // so log output reads as a cohesive block.
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     if self.log.is_empty() {
                         ui.label(
                             egui::RichText::new(
@@ -1203,7 +1221,7 @@ impl App {
                         );
                     }
                     let maxw = ui.available_width();
-                    let mono = egui::FontId::monospace(12.5);
+                    let mono = egui::FontId::monospace(13.0);
                     for line in &self.log {
                         match line.kind {
                             Kind::Tx if !self.show_tx => continue,
@@ -1293,34 +1311,35 @@ impl App {
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
         ui.label(egui::RichText::new("Every console command, grouped — expand a section to use it.").color(MUTED));
-        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(2.0);
 
         ui.add_enabled_ui(en, |ui| {
             section(ui, "t_info", "📋  Device information", HUE_INFO, true, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("info").clicked() { self.send_cmd("info".into()); }
-                    if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
-                    if ui.button("battery").clicked() { self.send_cmd("battery".into()); }
-                    if ui.button("nvs").clicked() { self.send_cmd("nvs".into()); }
-                    if ui.button("help").clicked() { self.send_cmd("help".into()); }
-                    if ui.button("ping").clicked() { self.send_cmd("ping".into()); }
-                    if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
+                    if ui.button("info").on_hover_text("Firmware version, IDs and current settings").clicked() { self.send_cmd("info".into()); }
+                    if ui.button("uptime").on_hover_text("Time since the tracker last booted").clicked() { self.send_cmd("uptime".into()); }
+                    if ui.button("battery").on_hover_text("Battery voltage and charge level").clicked() { self.send_cmd("battery".into()); }
+                    if ui.button("nvs").on_hover_text("Dump stored non-volatile settings (NVS)").clicked() { self.send_cmd("nvs".into()); }
+                    if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
+                    if ui.button("ping").on_hover_text("Check the tracker is alive and responding").clicked() { self.send_cmd("ping".into()); }
+                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd("meow".into()); }
                 });
             });
 
             section(ui, "t_sensor", "🎛  Sensors & calibration", HUE_SENSOR, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("scan").clicked() { self.send_cmd("scan".into()); }
-                    if ui.button("calibrate (ZRO)").clicked() { self.send_cmd("calibrate".into()); }
-                    if ui.button("6-side").clicked() { self.send_cmd("6-side".into()); }
-                    if ui.button("range").clicked() { self.send_cmd("range".into()); }
-                    if ui.button("range reset").clicked() { self.send_cmd("range reset".into()); }
+                    if ui.button("scan").on_hover_text("Detect and identify the attached IMU(s)").clicked() { self.send_cmd("scan".into()); }
+                    if ui.button("calibrate (ZRO)").on_hover_text("Zero the gyroscope — keep the tracker flat and still").clicked() { self.send_cmd("calibrate".into()); }
+                    if ui.button("6-side").on_hover_text("Six-sided accelerometer calibration — rest it on each face when prompted").clicked() { self.send_cmd("6-side".into()); }
+                    if ui.button("range").on_hover_text("Show the IMU accelerometer/gyro full-scale range").clicked() { self.send_cmd("range".into()); }
+                    if ui.button("range reset").on_hover_text("Restore the default IMU full-scale range").clicked() { self.send_cmd("range reset".into()); }
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("debug duration (1–60 s):");
                     ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
-                    if ui.button("debug").clicked() {
+                    if ui.button("debug").on_hover_text("Stream raw sensor data for N seconds (1–60)").clicked() {
                         let d = self.t_debug_dur.trim().to_owned();
                         if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
                     }
@@ -1330,7 +1349,7 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
                     ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
                     ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
-                    if ui.button("set sens").clicked() {
+                    if ui.button("set sens").on_hover_text("Set per-axis gyro sensitivity correction").clicked() {
                         let x = self.t_sens_x.trim().to_owned();
                         let y = self.t_sens_y.trim().to_owned();
                         let z = self.t_sens_z.trim().to_owned();
@@ -1340,46 +1359,46 @@ impl App {
                             self.send_cmd(format!("sens {x},{y},{z}"));
                         }
                     }
-                    if ui.button("sens reset").clicked() { self.send_cmd("sens reset".into()); }
+                    if ui.button("sens reset").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("sens reset".into()); }
                 });
             });
 
             section(ui, "t_mag", "🧭  Magnetometer", HUE_MAG, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("status (mag)").clicked() { self.send_cmd("mag".into()); }
-                    if ui.button("mag on").clicked() { self.send_cmd("mag on".into()); }
-                    if ui.button("mag off").clicked() { self.send_cmd("mag off".into()); }
-                    if ui.button("mag clear").clicked() { self.send_cmd("mag clear".into()); }
-                    if ui.button("mag cal").clicked() { self.send_cmd("mag cal".into()); }
+                    if ui.button("status (mag)").on_hover_text("Show magnetometer state").clicked() { self.send_cmd("mag".into()); }
+                    if ui.button("mag on").on_hover_text("Enable the magnetometer for heading correction").clicked() { self.send_cmd("mag on".into()); }
+                    if ui.button("mag off").on_hover_text("Disable the magnetometer").clicked() { self.send_cmd("mag off".into()); }
+                    if ui.button("mag clear").on_hover_text("Erase the stored magnetometer calibration").clicked() { self.send_cmd("mag clear".into()); }
+                    if ui.button("mag cal").on_hover_text("Start magnetometer calibration — rotate through all orientations").clicked() { self.send_cmd("mag cal".into()); }
                 });
             });
 
             section(ui, "t_tcal", "🌡  Temperature calibration (tcal)", HUE_TEMP, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal status").clicked() { self.send_cmd("tcal status".into()); }
-                    if ui.button("tcal on").clicked() { self.send_cmd("tcal on".into()); }
-                    if ui.button("tcal off").clicked() { self.send_cmd("tcal off".into()); }
-                    if ui.button("tcal dump").clicked() { self.send_cmd("tcal dump".into()); }
-                    if ui.button("tcal check").clicked() { self.send_cmd("tcal check".into()); }
-                    if ui.button("tcal clear").clicked() { self.send_cmd("tcal clear".into()); }
+                    if ui.button("tcal status").on_hover_text("Show temperature-calibration state").clicked() { self.send_cmd("tcal status".into()); }
+                    if ui.button("tcal on").on_hover_text("Enable temperature compensation").clicked() { self.send_cmd("tcal on".into()); }
+                    if ui.button("tcal off").on_hover_text("Disable temperature compensation").clicked() { self.send_cmd("tcal off".into()); }
+                    if ui.button("tcal dump").on_hover_text("Print the temperature-calibration table").clicked() { self.send_cmd("tcal dump".into()); }
+                    if ui.button("tcal check").on_hover_text("Report calibration coverage / quality").clicked() { self.send_cmd("tcal check".into()); }
+                    if ui.button("tcal clear").on_hover_text("Erase the temperature-calibration table").clicked() { self.send_cmd("tcal clear".into()); }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal auto on").clicked() { self.send_cmd("tcal auto on".into()); }
-                    if ui.button("tcal auto off").clicked() { self.send_cmd("tcal auto off".into()); }
-                    if ui.button("tcal boot on").clicked() { self.send_cmd("tcal boot on".into()); }
-                    if ui.button("tcal boot off").clicked() { self.send_cmd("tcal boot off".into()); }
+                    if ui.button("tcal auto on").on_hover_text("Collect temperature-calibration data automatically").clicked() { self.send_cmd("tcal auto on".into()); }
+                    if ui.button("tcal auto off").on_hover_text("Stop automatic temperature-calibration collection").clicked() { self.send_cmd("tcal auto off".into()); }
+                    if ui.button("tcal boot on").on_hover_text("Recalibrate temperature on every boot").clicked() { self.send_cmd("tcal boot on".into()); }
+                    if ui.button("tcal boot off").on_hover_text("Don't recalibrate temperature on boot").clicked() { self.send_cmd("tcal boot off".into()); }
                 });
                 ui.horizontal(|ui| {
                     ui.label("test temp (°C):");
                     ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
-                    if ui.button("tcal test").clicked() {
+                    if ui.button("tcal test").on_hover_text("Predict the gyro offset at a given temperature (°C)").clicked() {
                         let t = self.t_tcal_test.trim().to_owned();
                         if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
                     }
                     ui.separator();
                     ui.label("remove index:");
                     ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
-                    if ui.button("tcal remove").clicked() {
+                    if ui.button("tcal remove").on_hover_text("Delete one temperature-calibration sample by index").clicked() {
                         let i = self.t_tcal_remove.trim().to_owned();
                         if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
                     }
@@ -1390,55 +1409,55 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("receiver address (16 hex):");
                     ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
-                    if ui.button("set").clicked() {
+                    if ui.button("set").on_hover_text("Bond to a receiver by its 16 hex-digit address").clicked() {
                         let a = self.t_set_addr.trim().to_owned();
                         if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("pair").clicked() { self.send_cmd("pair".into()); }
-                    if Self::danger_button(ui, "clear pairing") { self.send_cmd("clear".into()); }
+                    if ui.button("pair").on_hover_text("Enter pairing mode to bond with a receiver").clicked() { self.send_cmd("pair".into()); }
+                    if Self::danger_button(ui, "clear pairing", "Forget the paired receiver") { self.send_cmd("clear".into()); }
                     ui.separator();
-                    if ui.button("tdma on").clicked() { self.send_cmd("tdma on".into()); }
-                    if ui.button("tdma off").clicked() { self.send_cmd("tdma off".into()); }
+                    if ui.button("tdma on").on_hover_text("Enable TDMA time-slotted radio scheduling").clicked() { self.send_cmd("tdma on".into()); }
+                    if ui.button("tdma off").on_hover_text("Disable TDMA scheduling").clicked() { self.send_cmd("tdma off".into()); }
                 });
                 ui.horizontal(|ui| {
                     ui.label("RF channel (1–100):");
                     ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("set channel").clicked() {
+                    if ui.button("set channel").on_hover_text("Set the RF channel (1–100)").clicked() {
                         let c = self.t_channel.trim().to_owned();
                         if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
                     }
-                    if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
+                    if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
                 });
             });
 
             section(ui, "t_system", "⚙  System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
-                    if Self::danger_button(ui, "shutdown") { self.send_cmd("shutdown".into()); }
-                    if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
-                    if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
+                    if ui.button("reboot").on_hover_text("Restart the tracker firmware").clicked() { self.send_cmd("reboot".into()); }
+                    if Self::danger_button(ui, "shutdown", "Power the tracker off") { self.send_cmd("shutdown".into()); }
+                    if Self::danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
+                    if Self::danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
                 });
             });
 
             section(ui, "t_reset", "♻  Reset / clear (careful)", HUE_RESET, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("reset zro").clicked() { self.send_cmd("reset zro".into()); }
-                    if ui.button("reset acc").clicked() { self.send_cmd("reset acc".into()); }
-                    if ui.button("reset sens").clicked() { self.send_cmd("reset sens".into()); }
-                    if ui.button("reset tcal").clicked() { self.send_cmd("reset tcal".into()); }
-                    if ui.button("reset mag").clicked() { self.send_cmd("reset mag".into()); }
-                    if ui.button("reset bat").clicked() { self.send_cmd("reset bat".into()); }
-                    if ui.button("reset fusion").clicked() { self.send_cmd("reset fusion".into()); }
-                    if Self::danger_button(ui, "reset all") { self.send_cmd("reset all".into()); }
+                    if ui.button("reset zro").on_hover_text("Clear the stored gyroscope zero offset").clicked() { self.send_cmd("reset zro".into()); }
+                    if ui.button("reset acc").on_hover_text("Clear the accelerometer calibration").clicked() { self.send_cmd("reset acc".into()); }
+                    if ui.button("reset sens").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("reset sens".into()); }
+                    if ui.button("reset tcal").on_hover_text("Clear the temperature-calibration table").clicked() { self.send_cmd("reset tcal".into()); }
+                    if ui.button("reset mag").on_hover_text("Clear the magnetometer calibration").clicked() { self.send_cmd("reset mag".into()); }
+                    if ui.button("reset bat").on_hover_text("Reset battery-gauge learning").clicked() { self.send_cmd("reset bat".into()); }
+                    if ui.button("reset fusion").on_hover_text("Reset the sensor-fusion filter state").clicked() { self.send_cmd("reset fusion".into()); }
+                    if Self::danger_button(ui, "reset all", "Erase ALL calibration and settings") { self.send_cmd("reset all".into()); }
                 });
             });
 
             section(ui, "t_test", "🧪  Test mode", HUE_TEST, false, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("test on").clicked() { self.send_cmd("test on".into()); }
-                    if ui.button("test off").clicked() { self.send_cmd("test off".into()); }
+                    if ui.button("test on").on_hover_text("Enter test / diagnostic mode").clicked() { self.send_cmd("test on".into()); }
+                    if ui.button("test off").on_hover_text("Leave test mode").clicked() { self.send_cmd("test off".into()); }
                 });
             });
         });
@@ -1493,16 +1512,17 @@ impl App {
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
         ui.label(egui::RichText::new("Local dongle commands, plus an over-the-air relay to paired trackers at the bottom.").color(MUTED));
-        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(2.0);
 
         ui.add_enabled_ui(en, |ui| {
             section(ui, "r_info", "📋  Device information", HUE_INFO, true, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("info").clicked() { self.send_cmd("info".into()); }
-                    if ui.button("uptime").clicked() { self.send_cmd("uptime".into()); }
-                    if ui.button("list (paired)").clicked() { self.send_cmd("list".into()); }
-                    if ui.button("help").clicked() { self.send_cmd("help".into()); }
-                    if ui.button("meow 🐱").clicked() { self.send_cmd("meow".into()); }
+                    if ui.button("info").on_hover_text("Firmware version, IDs and settings").clicked() { self.send_cmd("info".into()); }
+                    if ui.button("uptime").on_hover_text("Time since the receiver booted").clicked() { self.send_cmd("uptime".into()); }
+                    if ui.button("list (paired)").on_hover_text("List bonded trackers and their slots").clicked() { self.send_cmd("list".into()); }
+                    if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
+                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd("meow".into()); }
                 });
             });
 
@@ -1510,7 +1530,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("add address (12 hex):");
                     ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
-                    if ui.button("add").clicked() {
+                    if ui.button("add").on_hover_text("Manually bond a tracker by its 12 hex-digit address").clicked() {
                         let a = self.r_add_addr.trim().to_owned();
                         if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
                     }
@@ -1518,29 +1538,29 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("pair count (blank = until timeout):");
                     ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
-                    if ui.button("pair").clicked() {
+                    if ui.button("pair").on_hover_text("Listen for trackers in pairing mode (optionally a fixed count)").clicked() {
                         let c = self.r_pair_count.trim().to_owned();
                         if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
                     }
-                    if ui.button("exit pairing").clicked() { self.send_cmd("exit".into()); }
+                    if ui.button("exit pairing").on_hover_text("Stop listening for new trackers").clicked() { self.send_cmd("exit".into()); }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("remove last").clicked() { self.send_cmd("remove".into()); }
-                    if Self::danger_button(ui, "clear all pairings") { self.send_cmd("clear".into()); }
+                    if ui.button("remove last").on_hover_text("Unbond the most recently added tracker").clicked() { self.send_cmd("remove".into()); }
+                    if Self::danger_button(ui, "clear all pairings", "Forget every bonded tracker") { self.send_cmd("clear".into()); }
                 });
             });
 
             section(ui, "r_stats", "📊  Statistics", HUE_STATS, false, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("stats (toggle)").clicked() { self.send_cmd("stats".into()); }
+                    if ui.button("stats (toggle)").on_hover_text("Toggle live link-statistics output").clicked() { self.send_cmd("stats".into()); }
                     ui.separator();
                     ui.label("for N seconds:");
                     ui.add(egui::TextEdit::singleline(&mut self.r_stats_sec).desired_width(50.0).hint_text("30"));
-                    if ui.button("stats N").clicked() {
+                    if ui.button("stats N").on_hover_text("Print link statistics for N seconds, then stop").clicked() {
                         let s = self.r_stats_sec.trim().to_owned();
                         if s.is_empty() { self.push_info("Enter a duration in seconds.".into()); } else { self.send_cmd(format!("stats {s}")); }
                     }
-                    if ui.button("resetstats").clicked() { self.send_cmd("resetstats".into()); }
+                    if ui.button("resetstats").on_hover_text("Zero the statistics counters").clicked() { self.send_cmd("resetstats".into()); }
                 });
             });
 
@@ -1548,21 +1568,21 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("channel (1–100):");
                     ui.add(egui::TextEdit::singleline(&mut self.r_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("set channel").clicked() {
+                    if ui.button("set channel").on_hover_text("Set the receiver's RF channel (1–100)").clicked() {
                         let c = self.r_channel.trim().to_owned();
                         if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
                     }
-                    if ui.button("clearchannel").clicked() { self.send_cmd("clearchannel".into()); }
+                    if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
                     ui.separator();
-                    if ui.button("rssi_scan").clicked() { self.send_cmd("rssi_scan".into()); }
+                    if ui.button("rssi_scan").on_hover_text("Scan channels for RF noise / interference").clicked() { self.send_cmd("rssi_scan".into()); }
                 });
             });
 
             section(ui, "r_system", "⚙  System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("reboot").clicked() { self.send_cmd("reboot".into()); }
-                    if Self::danger_button(ui, "dfu (UF2)") { self.send_cmd("dfu".into()); }
-                    if Self::danger_button(ui, "dfu ota") { self.send_cmd("dfu ota".into()); }
+                    if ui.button("reboot").on_hover_text("Restart the receiver firmware").clicked() { self.send_cmd("reboot".into()); }
+                    if Self::danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
+                    if Self::danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
                 });
             });
 
@@ -1570,23 +1590,23 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("collect from tracker id:");
                     ui.add(egui::TextEdit::singleline(&mut self.r_collect_id).desired_width(50.0).hint_text("0"));
-                    if ui.button("collect").clicked() {
+                    if ui.button("collect").on_hover_text("Stream raw data from one tracker by id").clicked() {
                         let i = self.r_collect_id.trim().to_owned();
                         if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("collect {i}")); }
                     }
-                    if ui.button("collect off").clicked() { self.send_cmd("collect off".into()); }
-                    if ui.button("collect status").clicked() { self.send_cmd("collect".into()); }
+                    if ui.button("collect off").on_hover_text("Stop data collection").clicked() { self.send_cmd("collect off".into()); }
+                    if ui.button("collect status").on_hover_text("Show data-collection state").clicked() { self.send_cmd("collect".into()); }
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("ota status").clicked() { self.send_cmd("ota".into()); }
+                    if ui.button("ota status").on_hover_text("Show over-the-air update state").clicked() { self.send_cmd("ota".into()); }
                     ui.separator();
                     ui.label("ota info id:");
                     ui.add(egui::TextEdit::singleline(&mut self.r_ota_info).desired_width(50.0).hint_text("0"));
-                    if ui.button("ota info").clicked() {
+                    if ui.button("ota info").on_hover_text("Show OTA details for a tracker id").clicked() {
                         let i = self.r_ota_info.trim().to_owned();
                         if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("ota info {i}")); }
                     }
-                    if Self::danger_button(ui, "ota abort") { self.send_cmd("ota abort".into()); }
+                    if Self::danger_button(ui, "ota abort", "Cancel an in-progress OTA update") { self.send_cmd("ota abort".into()); }
                 });
             });
 
@@ -1607,58 +1627,58 @@ impl App {
                 ui.separator();
 
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("calibrate").clicked() { self.send_cmd(format!("send {target} calibrate")); }
-                    if ui.button("6-side").clicked() { self.send_cmd(format!("send {target} 6-side")); }
-                    if ui.button("scan").clicked() { self.send_cmd(format!("send {target} scan")); }
-                    if ui.button("ping").clicked() { self.send_cmd(format!("send {target} ping")); }
-                    if ui.button("meow 🐱").clicked() { self.send_cmd(format!("send {target} meow")); }
-                    if ui.button("reboot").clicked() { self.send_cmd(format!("send {target} reboot")); }
-                    if ui.button("fusion reset").clicked() { self.send_cmd(format!("send {target} fusion")); }
-                    if Self::danger_button(ui, "shutdown") { self.send_cmd(format!("send {target} shutdown")); }
-                    if Self::danger_button(ui, "clear pairing") { self.send_cmd(format!("send {target} clear")); }
+                    if ui.button("calibrate").on_hover_text("Zero the gyroscope on the target tracker(s)").clicked() { self.send_cmd(format!("send {target} calibrate")); }
+                    if ui.button("6-side").on_hover_text("Six-sided accel calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} 6-side")); }
+                    if ui.button("scan").on_hover_text("Re-detect the IMU on the target(s)").clicked() { self.send_cmd(format!("send {target} scan")); }
+                    if ui.button("ping").on_hover_text("Check the target tracker(s) respond").clicked() { self.send_cmd(format!("send {target} ping")); }
+                    if ui.button("meow 🐱").on_hover_text("🐱").clicked() { self.send_cmd(format!("send {target} meow")); }
+                    if ui.button("reboot").on_hover_text("Restart the target tracker(s)").clicked() { self.send_cmd(format!("send {target} reboot")); }
+                    if ui.button("fusion reset").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} fusion")); }
+                    if Self::danger_button(ui, "shutdown", "Power off the target tracker(s)") { self.send_cmd(format!("send {target} shutdown")); }
+                    if Self::danger_button(ui, "clear pairing", "Make the target(s) forget this receiver") { self.send_cmd(format!("send {target} clear")); }
                 });
 
                 ui.add_space(2.0);
                 ui.label("Magnetometer:");
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("mag on").clicked() { self.send_cmd(format!("send {target} mag on")); }
-                    if ui.button("mag off").clicked() { self.send_cmd(format!("send {target} mag off")); }
-                    if ui.button("mag clear").clicked() { self.send_cmd(format!("send {target} mag clear")); }
-                    if ui.button("mag cal").clicked() { self.send_cmd(format!("send {target} mag cal")); }
+                    if ui.button("mag on").on_hover_text("Enable the magnetometer on the target(s)").clicked() { self.send_cmd(format!("send {target} mag on")); }
+                    if ui.button("mag off").on_hover_text("Disable the magnetometer on the target(s)").clicked() { self.send_cmd(format!("send {target} mag off")); }
+                    if ui.button("mag clear").on_hover_text("Erase magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} mag clear")); }
+                    if ui.button("mag cal").on_hover_text("Start magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} mag cal")); }
                 });
 
                 ui.add_space(2.0);
                 ui.label("Reset:");
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("reset zro").clicked() { self.send_cmd(format!("send {target} reset zro")); }
-                    if ui.button("reset acc").clicked() { self.send_cmd(format!("send {target} reset acc")); }
-                    if ui.button("reset bat").clicked() { self.send_cmd(format!("send {target} reset bat")); }
-                    if ui.button("reset mag").clicked() { self.send_cmd(format!("send {target} reset mag")); }
-                    if ui.button("reset tcal").clicked() { self.send_cmd(format!("send {target} reset tcal")); }
-                    if ui.button("reset fusion").clicked() { self.send_cmd(format!("send {target} reset fusion")); }
+                    if ui.button("reset zro").on_hover_text("Clear gyro zero offset on the target(s)").clicked() { self.send_cmd(format!("send {target} reset zro")); }
+                    if ui.button("reset acc").on_hover_text("Clear accelerometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} reset acc")); }
+                    if ui.button("reset bat").on_hover_text("Reset battery-gauge learning on the target(s)").clicked() { self.send_cmd(format!("send {target} reset bat")); }
+                    if ui.button("reset mag").on_hover_text("Clear magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} reset mag")); }
+                    if ui.button("reset tcal").on_hover_text("Clear temperature-calibration table on the target(s)").clicked() { self.send_cmd(format!("send {target} reset tcal")); }
+                    if ui.button("reset fusion").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} reset fusion")); }
                 });
 
                 ui.add_space(2.0);
                 ui.label("Temperature calibration:");
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal on").clicked() { self.send_cmd(format!("send {target} tcal on")); }
-                    if ui.button("tcal off").clicked() { self.send_cmd(format!("send {target} tcal off")); }
-                    if ui.button("tcal auto on").clicked() { self.send_cmd(format!("send {target} tcal auto on")); }
-                    if ui.button("tcal auto off").clicked() { self.send_cmd(format!("send {target} tcal auto off")); }
-                    if ui.button("tcal boot on").clicked() { self.send_cmd(format!("send {target} tcal boot on")); }
-                    if ui.button("tcal boot off").clicked() { self.send_cmd(format!("send {target} tcal boot off")); }
-                    if ui.button("tcal clear").clicked() { self.send_cmd(format!("send {target} tcal clear")); }
+                    if ui.button("tcal on").on_hover_text("Enable temperature compensation on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal on")); }
+                    if ui.button("tcal off").on_hover_text("Disable temperature compensation on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal off")); }
+                    if ui.button("tcal auto on").on_hover_text("Auto-collect temperature data on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal auto on")); }
+                    if ui.button("tcal auto off").on_hover_text("Stop auto temperature collection on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal auto off")); }
+                    if ui.button("tcal boot on").on_hover_text("Recalibrate temperature each boot on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal boot on")); }
+                    if ui.button("tcal boot off").on_hover_text("Don't recalibrate temperature on boot on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal boot off")); }
+                    if ui.button("tcal clear").on_hover_text("Erase temperature-calibration table on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal clear")); }
                 });
 
                 ui.add_space(2.0);
                 ui.label("Scheduling / test / bootloader:");
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("tdma on").clicked() { self.send_cmd(format!("send {target} tdma on")); }
-                    if ui.button("tdma off").clicked() { self.send_cmd(format!("send {target} tdma off")); }
-                    if ui.button("test on").clicked() { self.send_cmd(format!("send {target} test on")); }
-                    if ui.button("test off").clicked() { self.send_cmd(format!("send {target} test off")); }
-                    if Self::danger_button(ui, "dfu") { self.send_cmd(format!("send {target} dfu")); }
-                    if Self::danger_button(ui, "dfu ota") { self.send_cmd(format!("send {target} dfu ota")); }
+                    if ui.button("tdma on").on_hover_text("Enable TDMA scheduling on the target(s)").clicked() { self.send_cmd(format!("send {target} tdma on")); }
+                    if ui.button("tdma off").on_hover_text("Disable TDMA scheduling on the target(s)").clicked() { self.send_cmd(format!("send {target} tdma off")); }
+                    if ui.button("test on").on_hover_text("Enter test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test on")); }
+                    if ui.button("test off").on_hover_text("Leave test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test off")); }
+                    if Self::danger_button(ui, "dfu", "Reboot the target(s) into the UF2 bootloader") { self.send_cmd(format!("send {target} dfu")); }
+                    if Self::danger_button(ui, "dfu ota", "Reboot the target(s) into OTA (BLE) update mode") { self.send_cmd(format!("send {target} dfu ota")); }
                 });
 
                 ui.add_space(4.0);
@@ -1667,7 +1687,7 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut self.rem_sens_x).desired_width(56.0).hint_text("x"));
                     ui.add(egui::TextEdit::singleline(&mut self.rem_sens_y).desired_width(56.0).hint_text("y"));
                     ui.add(egui::TextEdit::singleline(&mut self.rem_sens_z).desired_width(56.0).hint_text("z"));
-                    if ui.button("send sens").clicked() {
+                    if ui.button("send sens").on_hover_text("Set per-axis gyro sensitivity on the target(s)").clicked() {
                         let x = self.rem_sens_x.trim().to_owned();
                         let y = self.rem_sens_y.trim().to_owned();
                         let z = self.rem_sens_z.trim().to_owned();
@@ -1677,7 +1697,7 @@ impl App {
                             self.send_cmd(format!("send {target} sens {x},{y},{z}"));
                         }
                     }
-                    if ui.button("send sens reset").clicked() { self.send_cmd(format!("send {target} sens reset")); }
+                    if ui.button("send sens reset").on_hover_text("Clear gyro sensitivity on the target(s)").clicked() { self.send_cmd(format!("send {target} sens reset")); }
                 });
 
                 ui.add_space(4.0);
@@ -1687,11 +1707,11 @@ impl App {
                 );
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.rem_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("send all channel").clicked() {
+                    if ui.button("send all channel").on_hover_text("Set the RF channel on every device at once (1–100)").clicked() {
                         let c = self.rem_channel.trim().to_owned();
                         if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("send all channel {c}")); }
                     }
-                    if ui.button("send all clearchannel").clicked() { self.send_cmd("send all clearchannel".into()); }
+                    if ui.button("send all clearchannel").on_hover_text("Reset the RF channel to default on every device").clicked() { self.send_cmd("send all clearchannel".into()); }
                 });
             });
         });
