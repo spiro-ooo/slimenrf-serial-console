@@ -34,6 +34,12 @@ pub const SLIMENRF_VID: u16 = 0x1209;
 pub const RECEIVER_PID: u16 = 0x7690;
 pub const TRACKER_PID: u16 = 0x7692;
 
+/// Adafruit's USB vendor ID. When a SlimeNRF board running the UF2 (Adafruit)
+/// bootloader is in DFU mode it enumerates under this VID — first as a CDC serial
+/// port, then as a mass-storage drive — so a serial port with this VID is a device
+/// sitting in the bootloader, not running firmware.
+pub const ADAFRUIT_VID: u16 = 0x239A;
+
 /// A serial port discovered on the system, with USB metadata when available.
 #[derive(Clone, Debug)]
 pub struct PortInfo {
@@ -42,23 +48,45 @@ pub struct PortInfo {
     pub pid: Option<u16>,
     pub product: Option<String>,
     pub manufacturer: Option<String>,
+    pub serial_number: Option<String>,
     pub guessed_mode: Option<Mode>,
+    /// True if this port looks like a board sitting in the UF2 (Adafruit) bootloader.
+    pub in_bootloader: bool,
 }
 
 impl PortInfo {
-    /// One-line label for the port dropdown, e.g.
-    /// `COM7 — SlimeNRF Receiver ProMicro [1209:7690]`.
-    pub fn label(&self) -> String {
-        let mut parts = vec![self.name.clone()];
+    /// The most human-readable name available for this port: the USB product
+    /// string if present, otherwise the manufacturer, otherwise a generic label.
+    pub fn display_name(&self) -> String {
+        if self.in_bootloader {
+            return match &self.product {
+                Some(p) => format!("{p} (bootloader / DFU)"),
+                None => "Device in bootloader / DFU".to_owned(),
+            };
+        }
         if let Some(prod) = &self.product {
-            parts.push(format!("— {prod}"));
+            prod.clone()
         } else if let Some(man) = &self.manufacturer {
-            parts.push(format!("— {man}"));
+            man.clone()
+        } else if self.vid.is_some() {
+            "USB serial device".to_owned()
+        } else {
+            "Serial port".to_owned()
         }
-        if let (Some(vid), Some(pid)) = (self.vid, self.pid) {
-            parts.push(format!("[{vid:04x}:{pid:04x}]"));
+    }
+
+    /// One-line label for the port dropdown's collapsed text, e.g.
+    /// `COM7 — SlimeNRF Receiver nRF52840 Dongle`.
+    pub fn label(&self) -> String {
+        format!("{} — {}", self.name, self.display_name())
+    }
+
+    /// VID:PID as a string, e.g. `1209:7690`, or `—` if not a USB device.
+    pub fn ids(&self) -> String {
+        match (self.vid, self.pid) {
+            (Some(v), Some(p)) => format!("{v:04x}:{p:04x}"),
+            _ => "—".to_owned(),
         }
-        parts.join(" ")
     }
 }
 
@@ -72,16 +100,18 @@ pub fn list_ports() -> Vec<PortInfo> {
     };
 
     for p in ports {
-        let (vid, pid, product, manufacturer) = match &p.port_type {
+        let (vid, pid, product, manufacturer, serial_number) = match &p.port_type {
             SerialPortType::UsbPort(info) => (
                 Some(info.vid),
                 Some(info.pid),
                 info.product.clone(),
                 info.manufacturer.clone(),
+                info.serial_number.clone(),
             ),
-            _ => (None, None, None, None),
+            _ => (None, None, None, None, None),
         };
 
+        let in_bootloader = vid == Some(ADAFRUIT_VID);
         let guessed_mode = guess_mode(vid, pid, product.as_deref());
 
         out.push(PortInfo {
@@ -90,7 +120,9 @@ pub fn list_ports() -> Vec<PortInfo> {
             pid,
             product,
             manufacturer,
+            serial_number,
             guessed_mode,
+            in_bootloader,
         });
     }
 

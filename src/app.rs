@@ -1061,25 +1061,49 @@ impl App {
         ui.add_space(4.0);
 
         // Precompute dropdown contents so the combo closure doesn't borrow self.
-        let port_items: Vec<(String, String)> =
-            self.ports.iter().map(|p| (p.name.clone(), p.label())).collect();
+        // (port_name, friendly label, id string, is_slimenrf_or_bootloader)
+        let port_items: Vec<(String, String, String, bool)> = self
+            .ports
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.label(),
+                    p.ids(),
+                    p.guessed_mode.is_some() || p.in_bootloader,
+                )
+            })
+            .collect();
         let current = self.selected_port.clone();
+        let current_label = self
+            .current_port_info()
+            .map(|p| p.label())
+            .or_else(|| current.clone())
+            .unwrap_or_else(|| "<no port detected>".to_owned());
 
         ui.horizontal_wrapped(|ui| {
             ui.label("Port:");
             let mut new_selection: Option<String> = None;
             egui::ComboBox::from_id_salt("port_combo")
-                .selected_text(current.clone().unwrap_or_else(|| "<no port detected>".to_owned()))
+                .selected_text(current_label)
                 .width(380.0)
                 .show_ui(ui, |ui| {
                     if port_items.is_empty() {
                         ui.label("(no serial ports found)");
                     }
-                    for (name, label) in &port_items {
+                    for (name, label, ids, known) in &port_items {
                         let selected = current.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(selected, label.as_str()).clicked() {
-                            new_selection = Some(name.clone());
-                        }
+                        let text = if *known {
+                            egui::RichText::new(label).strong()
+                        } else {
+                            egui::RichText::new(label)
+                        };
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(selected, text).clicked() {
+                                new_selection = Some(name.clone());
+                            }
+                            ui.label(egui::RichText::new(format!("[{ids}]")).weak().small());
+                        });
                     }
                 });
             if let Some(sel) = new_selection {
@@ -1140,6 +1164,32 @@ impl App {
                 ui.label(egui::RichText::new(format!("auto-detected: {}", m.label())).weak());
             }
         });
+
+        // Details of the selected port, so it's clear what each COM/tty actually is.
+        if let Some(info) = self.current_port_info() {
+            let name = info.display_name();
+            let ids = info.ids();
+            let serial = info.serial_number.clone();
+            let boot = info.in_bootloader;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Device:").color(MUTED));
+                ui.label(egui::RichText::new(name).strong());
+                ui.label(egui::RichText::new(format!("· USB {ids}")).color(MUTED));
+                if let Some(sn) = serial {
+                    if !sn.is_empty() {
+                        ui.label(egui::RichText::new(format!("· s/n {sn}")).color(MUTED));
+                    }
+                }
+            });
+            if boot {
+                ui.label(
+                    egui::RichText::new(
+                        "This port is a board in UF2 bootloader mode — use the firmware updater, not the console.",
+                    )
+                    .color(ACCENT_AMBER),
+                );
+            }
+        }
 
         ui.add_space(6.0);
     }
@@ -1525,13 +1575,15 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Update (DFU)", ACCENT_AMBER)
+                    if Self::primary(ui, en, "Enter DFU", ACCENT_AMBER)
                         .on_hover_text("Sends: dfu")
                         .clicked()
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Reboot the receiver into its bootloader to flash new firmware. It disconnects afterwards.");
+                    Self::desc(ui, "Reboot the receiver into its bootloader, then flash with an external tool. \
+                        If it re-appears as a USB drive, drag a .uf2 onto it; if not, it uses nRF DFU — flash the \
+                        .zip/.hex with nRF Connect or nrfutil. (The 'Update all trackers' tool does not flash the receiver.)");
                 });
             });
 
