@@ -1,4 +1,4 @@
-name: rust-build
+name: build
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false        # one platform failing won't cancel the other
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -19,21 +19,16 @@ jobs:
             name: windows
             bin: slimenrf-serial-gui.exe
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2   # caches deps per-OS, big speedup on reruns
-
+      - uses: Swatinem/rust-cache@v2
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
-
       - name: Build
         run: cargo build --release
-
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: slimenrf-serial-gui-${{ matrix.name }}
           path: target/release/${{ matrix.bin }}
