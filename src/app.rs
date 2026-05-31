@@ -902,12 +902,7 @@ impl App {
                         ui.label(egui::RichText::new(txt).color(MUTED));
                     });
                 });
-                Self::desc(
-                    ui,
-                    "Puts every USB-connected tracker into its UF2 bootloader and copies the \
-                     selected firmware onto each one. Trackers paired wirelessly to a receiver \
-                     are not updated this way — connect them by USB.",
-                );
+                Self::desc(ui, "Updates every tracker connected by USB. Wireless trackers aren't included.");
                 ui.add_space(6.0);
 
                 // Firmware picker row.
@@ -1224,21 +1219,7 @@ impl App {
                         );
                     });
                 });
-                Self::desc(
-                    ui,
-                    "Flashes the receiver dongle over Nordic secure DFU — no nRF Connect needed. \
-                     Pick the firmware: a .hex (the init packet is built for you) or a Nordic DFU \
-                     .zip, then click Flash.",
-                );
-                ui.add_space(2.0);
-                Self::desc(
-                    ui,
-                    "Putting the dongle in DFU: the \"dfu\" command is unreliable on some hardware, so \
-                     the dependable way is the button — hold the receiver's button down for ~10 seconds \
-                     until its LED changes, or hold the button while plugging it in. Once it's in DFU \
-                     this panel detects it automatically (it'll read \"1 receiver detected\" and the \
-                     device line will say \"in DFU mode\").",
-                );
+                Self::desc(ui, "Flashes the receiver dongle directly — pick a .hex or DFU .zip, then Flash. To enter DFU, hold a magnet to the dongle while plugging it in.");
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
@@ -1289,7 +1270,7 @@ impl App {
                              touch this if flashing fails with error 0x07.",
                         );
                         ui.label(
-                            egui::RichText::new("leave at 0x00 (this receiver has no SoftDevice)")
+                            egui::RichText::new("leave at 0x00")
                                 .color(MUTED)
                                 .small(),
                         );
@@ -1708,7 +1689,7 @@ impl App {
                     {
                         self.send_cmd("calibrate".into());
                     }
-                    Self::desc(ui, "Lay the tracker flat and keep it still, then run this to zero the gyroscope (ZRO).");
+                    Self::desc(ui, "Lay the tracker flat and still, then zero the gyroscope.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1718,7 +1699,7 @@ impl App {
                     {
                         self.send_cmd("pair".into());
                     }
-                    Self::desc(ui, "Put the tracker into pairing mode so a receiver can bond with it.");
+                    Self::desc(ui, "Put the tracker into pairing mode.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1728,7 +1709,7 @@ impl App {
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Reboot into the UF2 bootloader to flash new firmware. The device disconnects afterwards.");
+                    Self::desc(ui, "Reboot into the bootloader to flash firmware.");
                 });
             });
 
@@ -1737,7 +1718,6 @@ impl App {
 
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
-        ui.label(egui::RichText::new("Every console command, grouped — expand a section to use it.").color(MUTED));
         ui.separator();
         ui.add_space(2.0);
 
@@ -1938,7 +1918,7 @@ impl App {
                     {
                         self.send_cmd("pair".into());
                     }
-                    Self::desc(ui, "Listen for nearby trackers in pairing mode and bond them to this receiver.");
+                    Self::desc(ui, "Listen for nearby trackers and bond them.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1948,7 +1928,7 @@ impl App {
                     {
                         self.send_cmd("send all calibrate".into());
                     }
-                    Self::desc(ui, "Tell every connected tracker to zero its gyroscope at once. Lay them all flat and still first.");
+                    Self::desc(ui, "Lay all trackers flat and still, then zero them at once.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1958,10 +1938,7 @@ impl App {
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Tries to reboot the receiver into its bootloader by command — but \
-                        this is unreliable on some hardware. The dependable way is the button: hold it \
-                        ~10 s until the LED changes, or hold it while plugging in. Then flash from the \
-                        \"Update receiver firmware\" panel below.");
+                    Self::desc(ui, "Reboot into the bootloader. If the command doesn't work, hold a magnet to the dongle while plugging in.");
                 });
             });
 
@@ -1970,7 +1947,6 @@ impl App {
 
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
-        ui.label(egui::RichText::new("Local dongle commands, plus an over-the-air relay to paired trackers at the bottom.").color(MUTED));
         ui.separator();
         ui.add_space(2.0);
 
@@ -2002,7 +1978,7 @@ impl App {
 
                         ui.label("pair count (blank = until timeout):");
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("∞"));
+                            ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("all"));
                             if ui.button("pair").on_hover_text("Listen for trackers in pairing mode (optionally a fixed count)").clicked() {
                                 let c = self.r_pair_count.trim().to_owned();
                                 if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
@@ -2078,7 +2054,7 @@ impl App {
                 });
             });
 
-            section(ui, "r_remote", "Remote commands → tracker(s)", HUE_REMOTE, false, |ui| {
+            section(ui, "r_remote", "Remote commands -> tracker(s)", HUE_REMOTE, false, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Target:");
                     ui.selectable_value(&mut self.rem_target_all, true, "All active");
@@ -2091,7 +2067,7 @@ impl App {
                 });
 
                 let target = self.remote_target();
-                ui.label(egui::RichText::new(format!("→ send {target} <command>")).color(MUTED).monospace());
+                ui.label(egui::RichText::new(format!("-> send {target} <command>")).color(MUTED).monospace());
                 ui.separator();
 
                 ui.horizontal_wrapped(|ui| {
