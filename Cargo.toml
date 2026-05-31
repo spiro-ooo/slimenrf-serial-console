@@ -12,6 +12,10 @@ build = "build.rs"
 eframe = "0.34"
 # Cross-platform serial port access + USB VID/PID enumeration.
 serialport = "4.9"
+# Native file-open dialog for picking the .uf2 firmware. On Linux this uses the
+# XDG desktop portal by default (no GTK build- or run-time dependency), so it works
+# on KDE/Wayland/etc. out of the box.
+rfd = "0.17"
 
 [build-dependencies]
 # Embeds the .ico into the Windows .exe (see build.rs). Kept unconditional rather

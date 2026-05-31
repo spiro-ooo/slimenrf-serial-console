@@ -10,12 +10,17 @@
 //! guided to connect first. The console renders ANSI-coloured firmware output and
 //! can filter sent lines, warnings, and errors independently.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
 
+use crate::dfu::{
+    drive_key_set, find_uf2_drives, run_dfu_update, DfuProgress,
+};
 use crate::serial::{list_ports, run_worker, FromWorker, Mode, PortInfo, ToWorker};
 
 // ---- palette ---------------------------------------------------------------
@@ -309,6 +314,23 @@ pub struct App {
     rem_sens_x: String,
     rem_sens_y: String,
     rem_sens_z: String,
+
+    // Batch firmware updater (DFU). The worker streams DfuProgress while running.
+    dfu_firmware: String,
+    dfu_include_existing: bool,
+    dfu_rx: Option<mpsc::Receiver<DfuProgress>>,
+    dfu_running: bool,
+    dfu_log: Vec<(DfuLevel, String)>,
+    dfu_result: Option<(usize, usize)>,
+    dfu_drives_present: usize,
+}
+
+/// Severity for a line in the DFU progress log (styling only).
+#[derive(Copy, Clone, PartialEq)]
+enum DfuLevel {
+    Info,
+    Good,
+    Warn,
 }
 
 impl Default for App {
@@ -347,6 +369,13 @@ impl Default for App {
             rem_sens_x: String::new(),
             rem_sens_y: String::new(),
             rem_sens_z: String::new(),
+            dfu_firmware: String::new(),
+            dfu_include_existing: false,
+            dfu_rx: None,
+            dfu_running: false,
+            dfu_log: Vec::new(),
+            dfu_result: None,
+            dfu_drives_present: 0,
         }
     }
 }
@@ -542,6 +571,306 @@ impl App {
             self.connection = None;
             self.push_info("Connection closed.".to_owned());
         }
+    }
+
+    // ---- batch firmware update (DFU) ---------------------------------------
+
+    fn dfu_log_push(&mut self, level: DfuLevel, msg: String) {
+        self.dfu_log.push((level, msg));
+        const MAX: usize = 400;
+        if self.dfu_log.len() > MAX {
+            let excess = self.dfu_log.len() - MAX;
+            self.dfu_log.drain(0..excess);
+        }
+    }
+
+    /// Drain DfuProgress events from the worker into the DFU log.
+    fn poll_dfu(&mut self) {
+        let mut events = Vec::new();
+        let mut closed = false;
+        if let Some(rx) = &self.dfu_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(e) => events.push(e),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for e in events {
+            match e {
+                DfuProgress::Status(s) => self.dfu_log_push(DfuLevel::Info, s),
+                DfuProgress::PortTriggered { port, ok } => {
+                    if ok {
+                        self.dfu_log_push(DfuLevel::Good, format!("{port}: entering DFU"));
+                    } else {
+                        self.dfu_log_push(
+                            DfuLevel::Warn,
+                            format!("{port}: could not send dfu (already rebooted?)"),
+                        );
+                    }
+                }
+                DfuProgress::DriveFound(d) => {
+                    self.dfu_log_push(DfuLevel::Info, format!("Found {} — flashing…", d.describe()));
+                }
+                DfuProgress::Flashed { mount } => {
+                    self.dfu_log_push(DfuLevel::Good, format!("Flashed {}", mount.display()));
+                }
+                DfuProgress::Warn(s) => self.dfu_log_push(DfuLevel::Warn, s),
+                DfuProgress::Finished { flashed, expected } => {
+                    self.dfu_result = Some((flashed, expected));
+                    self.dfu_running = false;
+                    let lvl = if flashed == expected && expected > 0 {
+                        DfuLevel::Good
+                    } else {
+                        DfuLevel::Warn
+                    };
+                    self.dfu_log_push(
+                        lvl,
+                        format!("Done — flashed {flashed} of {expected} device(s)."),
+                    );
+                }
+            }
+        }
+
+        if closed {
+            self.dfu_rx = None;
+            if self.dfu_running {
+                self.dfu_running = false;
+            }
+        }
+    }
+
+    /// Tracker serial ports currently present (USB-connected trackers only).
+    fn tracker_ports(&self) -> Vec<String> {
+        self.ports
+            .iter()
+            .filter(|p| p.guessed_mode == Some(Mode::Tracker))
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    /// Kick off the batch update on a worker thread.
+    fn start_dfu_update(&mut self, ctx: &egui::Context) {
+        if self.dfu_running {
+            return;
+        }
+
+        // Validate the firmware path. Own the string so we can also log (&mut self).
+        let fw = self.dfu_firmware.trim().to_owned();
+        if fw.is_empty() {
+            self.dfu_log_push(DfuLevel::Warn, "Choose a .uf2 firmware file first.".to_owned());
+            return;
+        }
+        let fw_path = PathBuf::from(&fw);
+        if !fw_path.is_file() {
+            self.dfu_log_push(DfuLevel::Warn, format!("File not found: {fw}"));
+            return;
+        }
+        if fw_path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
+            != Some("uf2".to_owned())
+        {
+            self.dfu_log_push(
+                DfuLevel::Warn,
+                "That isn't a .uf2 file — the UF2 bootloader only accepts .uf2 images."
+                    .to_owned(),
+            );
+            return;
+        }
+
+        let ports = self.tracker_ports();
+        let pre_existing = drive_key_set(&find_uf2_drives());
+
+        if ports.is_empty() && !(self.dfu_include_existing && !pre_existing.is_empty()) {
+            self.dfu_log_push(
+                DfuLevel::Warn,
+                "No USB-connected trackers detected. Plug in a tracker (or tick \
+                 \"also flash drives already in DFU\")."
+                    .to_owned(),
+            );
+            return;
+        }
+
+        // The device is about to reboot; release our own serial connection if it's
+        // one of the targets, so the DFU worker can open the port.
+        if self.connection.is_some() {
+            self.disconnect();
+        }
+
+        // Reset run state.
+        self.dfu_log.clear();
+        self.dfu_result = None;
+        self.dfu_running = true;
+        self.dfu_log_push(
+            DfuLevel::Info,
+            format!(
+                "Starting update: {} tracker port(s){}.",
+                ports.len(),
+                if self.dfu_include_existing && !pre_existing.is_empty() {
+                    format!(", plus {} drive(s) already in DFU", pre_existing.len())
+                } else {
+                    String::new()
+                }
+            ),
+        );
+
+        let (tx, rx) = mpsc::channel::<DfuProgress>();
+        self.dfu_rx = Some(rx);
+
+        let line_ending: &'static str = if self.line_ending_crlf { "\r\n" } else { "\n" };
+        let include_existing = self.dfu_include_existing;
+        let ctx2 = ctx.clone();
+
+        let spawned = thread::Builder::new()
+            .name("dfu-worker".to_owned())
+            .spawn(move || {
+                run_dfu_update(
+                    ports,
+                    fw_path,
+                    pre_existing,
+                    include_existing,
+                    line_ending,
+                    tx,
+                    ctx2,
+                );
+            });
+
+        if let Err(e) = spawned {
+            self.dfu_running = false;
+            self.dfu_rx = None;
+            self.dfu_log_push(DfuLevel::Warn, format!("Could not start updater: {e}"));
+        }
+    }
+
+    /// The "Update all trackers" card UI.
+    fn dfu_update_card(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style())
+            .fill(CARD_BG)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("UPDATE ALL TRACKERS")
+                            .size(13.0)
+                            .strong()
+                            .color(MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Live count of trackers we'd flash.
+                        let n = self.tracker_ports().len();
+                        let txt = if n == 1 {
+                            "1 tracker detected".to_owned()
+                        } else {
+                            format!("{n} trackers detected")
+                        };
+                        ui.label(egui::RichText::new(txt).color(MUTED));
+                    });
+                });
+                Self::desc(
+                    ui,
+                    "Puts every USB-connected tracker into its UF2 bootloader and copies the \
+                     selected firmware onto each one. Trackers paired wirelessly to a receiver \
+                     are not updated this way — connect them by USB.",
+                );
+                ui.add_space(6.0);
+
+                // Firmware picker row.
+                ui.horizontal(|ui| {
+                    ui.label("Firmware:");
+                    let avail = ui.available_width();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.dfu_firmware)
+                            .desired_width((avail - 96.0).max(120.0))
+                            .hint_text("path to firmware .uf2"),
+                    );
+                    if ui.add_enabled(!self.dfu_running, egui::Button::new("Browse…")).clicked() {
+                        // Native file dialog (XDG portal on Linux — no GTK needed).
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter("UF2 firmware", &["uf2"])
+                            .set_title("Select tracker firmware (.uf2)");
+                        // Start in the directory of the current entry, if any.
+                        let cur = self.dfu_firmware.trim().to_owned();
+                        if !cur.is_empty() {
+                            if let Some(parent) = PathBuf::from(&cur).parent() {
+                                if parent.is_dir() {
+                                    dlg = dlg.set_directory(parent);
+                                }
+                            }
+                        }
+                        if let Some(path) = dlg.pick_file() {
+                            self.dfu_firmware = path.display().to_string();
+                        }
+                    }
+                });
+
+                ui.add_space(2.0);
+                ui.checkbox(
+                    &mut self.dfu_include_existing,
+                    "Also flash drives already in DFU mode",
+                )
+                .on_hover_text(
+                    "Off: only trackers that enter DFU from this action are flashed.\n\
+                     On: also flash any UF2 drive already mounted (e.g. a manually-reset board).",
+                );
+
+                ui.add_space(8.0);
+
+                // Action button + spinner.
+                ui.horizontal(|ui| {
+                    let label = if self.dfu_running {
+                        "Updating…"
+                    } else {
+                        "⬆  Update all trackers"
+                    };
+                    if Self::primary(ui, !self.dfu_running, label, ACCENT_AMBER).clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.start_dfu_update(&ctx);
+                    }
+                    if self.dfu_running {
+                        ui.add(egui::Spinner::new());
+                    }
+                    if !self.dfu_running && !self.dfu_log.is_empty() {
+                        if ui.button("Clear log").clicked() {
+                            self.dfu_log.clear();
+                            self.dfu_result = None;
+                        }
+                    }
+                });
+
+                // Progress log.
+                if !self.dfu_log.is_empty() {
+                    ui.add_space(6.0);
+                    egui::Frame::group(ui.style())
+                        .fill(egui::Color32::from_rgb(24, 27, 34))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .auto_shrink([false, true])
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    for (lvl, msg) in &self.dfu_log {
+                                        let color = match lvl {
+                                            DfuLevel::Info => MUTED,
+                                            DfuLevel::Good => {
+                                                egui::Color32::from_rgb(120, 200, 130)
+                                            }
+                                            DfuLevel::Warn => {
+                                                egui::Color32::from_rgb(222, 180, 90)
+                                            }
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(msg)
+                                                .color(color)
+                                                .font(egui::FontId::monospace(12.0)),
+                                        );
+                                    }
+                                });
+                        });
+                }
+            });
     }
 
     /// The current `send` target string (`"all"` or a tracker id).
@@ -856,6 +1185,9 @@ impl App {
                     Self::desc(ui, "Reboot into the UF2 bootloader to flash new firmware. The device disconnects afterwards.");
                 });
             });
+
+        ui.add_space(10.0);
+        self.dfu_update_card(ui);
 
         ui.add_space(10.0);
         ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
@@ -1301,6 +1633,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
 
         self.poll();
+        self.poll_dfu();
 
         egui::Panel::top("connection_bar").show_inside(ui, |ui| {
             self.connection_bar(ui, &ctx);
@@ -1347,7 +1680,7 @@ impl eframe::App for App {
                 });
         });
 
-        if self.connection.is_some() {
+        if self.connection.is_some() || self.dfu_running {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
     }
