@@ -281,6 +281,9 @@ pub struct App {
     show_err: bool,
     raw_input: String,
 
+    // Branding: the app icon, uploaded once as a texture for the in-app logo.
+    icon_texture: Option<egui::TextureHandle>,
+
     // Tracker parameter fields
     t_debug_dur: String,
     t_sens_x: String,
@@ -323,6 +326,7 @@ impl Default for App {
             show_warn: false, // warnings hidden by default
             show_err: true,
             raw_input: String::new(),
+            icon_texture: None,
             t_debug_dur: String::new(),
             t_sens_x: String::new(),
             t_sens_y: String::new(),
@@ -351,12 +355,29 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         // A little more breathing room than the default makes dense panels readable.
-        let mut style = (*cc.egui_ctx.style()).clone();
+        let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_global_style(style);
 
         let mut app = App::default();
+
+        // Decode the embedded icon once and upload it as a texture for the in-app
+        // logo. Reuses eframe's PNG decoder (the `image` crate it already pulls in),
+        // so this adds no dependency. ColorImage wants straight (unmultiplied) alpha,
+        // which is exactly what from_png_bytes returns.
+        if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            );
+            app.icon_texture = Some(cc.egui_ctx.load_texture(
+                "app-icon",
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+
         app.refresh_ports();
         if let Some(m) = app.current_port_info().and_then(|p| p.guessed_mode) {
             app.mode = m;
@@ -574,6 +595,10 @@ impl App {
         ui.add_space(6.0);
 
         ui.horizontal_wrapped(|ui| {
+            if let Some(tex) = &self.icon_texture {
+                ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(26.0, 26.0)));
+                ui.add_space(4.0);
+            }
             ui.heading("SlimeNRF Serial Control");
             ui.separator();
             if self.is_connected() {
