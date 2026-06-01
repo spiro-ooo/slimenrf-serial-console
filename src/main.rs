@@ -2,9 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod console;
 mod dfu;
 mod nrfdfu;
 mod serial;
+mod theme;
 
 use app::App;
 

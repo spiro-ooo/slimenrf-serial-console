@@ -18,265 +18,17 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::console::{classify_rx, parse_ansi, Kind, LogLine, Segment};
 use crate::dfu::{
     drive_key_set, find_uf2_drives, run_dfu_update, DfuProgress,
 };
 use crate::nrfdfu::{run_receiver_dfu, NrfProgress};
 use crate::serial::{list_ports, run_worker, FromWorker, Mode, PortInfo, ToWorker};
-
-// ---- palette ---------------------------------------------------------------
-
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(74, 125, 205); // primary, safe
-const ACCENT_AMBER: egui::Color32 = egui::Color32::from_rgb(199, 138, 46); // update / caution
-const DANGER: egui::Color32 = egui::Color32::from_rgb(170, 62, 62); // destructive
-const MUTED: egui::Color32 = egui::Color32::from_rgb(166, 171, 180); // secondary text
-const CARD_BG: egui::Color32 = egui::Color32::from_rgb(33, 37, 46);
-const BANNER_BG: egui::Color32 = egui::Color32::from_rgb(52, 45, 30);
-
-// Per-section accent hues. Each command section gets its own colour: a coloured
-// header, a tinted bordered frame, and tinted buttons. This turns the long list of
-// look-alike grey buttons into colour-grouped clusters you can scan at a glance.
-// Red is deliberately *not* used as a section hue — it's reserved app-wide for
-// destructive actions (see `danger_button`) so "careful" always looks the same.
-const HUE_INFO: egui::Color32 = egui::Color32::from_rgb(96, 142, 196); // steel blue
-const HUE_SENSOR: egui::Color32 = egui::Color32::from_rgb(70, 168, 162); // teal
-const HUE_MAG: egui::Color32 = egui::Color32::from_rgb(150, 124, 206); // violet
-const HUE_TEMP: egui::Color32 = egui::Color32::from_rgb(202, 150, 74); // amber
-const HUE_CONN: egui::Color32 = egui::Color32::from_rgb(106, 168, 96); // green
-const HUE_SYSTEM: egui::Color32 = egui::Color32::from_rgb(120, 140, 158); // slate
-const HUE_RESET: egui::Color32 = egui::Color32::from_rgb(192, 110, 92); // clay (destructive-ish)
-const HUE_TEST: egui::Color32 = egui::Color32::from_rgb(196, 116, 170); // magenta
-const HUE_STATS: egui::Color32 = egui::Color32::from_rgb(86, 156, 188); // cyan
-const HUE_DATA: egui::Color32 = egui::Color32::from_rgb(170, 150, 96); // ochre
-const HUE_REMOTE: egui::Color32 = egui::Color32::from_rgb(126, 150, 210); // periwinkle
-
-// ---- console line model ----------------------------------------------------
-
-/// Category of a console line — drives both colour and the show/hide filters.
-#[derive(Copy, Clone, PartialEq)]
-enum Kind {
-    Tx,
-    Rx,
-    Info,
-    Warn,
-    Err,
-}
-
-impl Kind {
-    /// Default colour for text that carries no explicit ANSI colour of its own.
-    fn default_color(self) -> egui::Color32 {
-        match self {
-            Kind::Tx => egui::Color32::from_rgb(120, 170, 255),
-            Kind::Rx => egui::Color32::from_rgb(222, 224, 228),
-            Kind::Info => egui::Color32::from_rgb(150, 160, 172),
-            Kind::Warn => egui::Color32::from_rgb(222, 192, 92),
-            Kind::Err => egui::Color32::from_rgb(240, 104, 104),
-        }
-    }
-
-    fn prefix(self) -> &'static str {
-        match self {
-            Kind::Tx => "» ",
-            Kind::Rx => "",
-            Kind::Info => "· ",
-            Kind::Warn => "! ",
-            Kind::Err => "x ",
-        }
-    }
-}
-
-/// A run of text sharing one colour. `color == None` means "use the line's Kind
-/// colour" (i.e. the firmware didn't colour this run with an ANSI escape).
-struct Segment {
-    text: String,
-    color: Option<egui::Color32>,
-}
-
-struct LogLine {
-    kind: Kind,
-    segments: Vec<Segment>,
-}
-
-// ---- ANSI / xterm-256 colour handling --------------------------------------
-
-/// Map an xterm-256 colour index to RGB (standard 16 + 6×6×6 cube + greyscale).
-fn xterm_color(n: u8) -> (u8, u8, u8) {
-    match n {
-        0 => (0, 0, 0),
-        1 => (187, 0, 0),
-        2 => (0, 187, 0),
-        3 => (187, 187, 0),
-        4 => (0, 0, 187),
-        5 => (187, 0, 187),
-        6 => (0, 187, 187),
-        7 => (200, 200, 200),
-        8 => (110, 110, 110),
-        9 => (255, 80, 80),
-        10 => (90, 230, 90),
-        11 => (240, 230, 80),
-        12 => (110, 150, 255),
-        13 => (240, 120, 240),
-        14 => (80, 220, 230),
-        15 => (255, 255, 255),
-        16..=231 => {
-            let m = n - 16;
-            let r = m / 36;
-            let g = (m % 36) / 6;
-            let b = m % 6;
-            let conv = |c: u8| if c == 0 { 0 } else { 55 + 40 * c };
-            (conv(r), conv(g), conv(b))
-        }
-        232..=255 => {
-            let v = (8u16 + 10 * (n as u16 - 232)) as u8;
-            (v, v, v)
-        }
-    }
-}
-
-fn lighten(rgb: (u8, u8, u8), amt: f32) -> (u8, u8, u8) {
-    let l = |c: u8| (c as f32 + (255.0 - c as f32) * amt) as u8;
-    (l(rgb.0), l(rgb.1), l(rgb.2))
-}
-
-/// Keep very dark colours visible against the dark console background.
-fn readable(rgb: (u8, u8, u8)) -> egui::Color32 {
-    let (r, g, b) = rgb;
-    let maxc = r.max(g).max(b);
-    if maxc == 0 {
-        return egui::Color32::from_rgb(140, 140, 140);
-    }
-    if maxc < 90 {
-        let factor = 120.0 / maxc as f32;
-        let s = |c: u8| (c as f32 * factor).min(255.0) as u8;
-        return egui::Color32::from_rgb(s(r), s(g), s(b));
-    }
-    egui::Color32::from_rgb(r, g, b)
-}
-
-/// Apply one SGR (`\x1b[...m`) parameter list to the running colour/bold state.
-fn apply_sgr(params: &str, base: &mut Option<(u8, u8, u8)>, bold: &mut bool) {
-    let nums: Vec<i64> = if params.is_empty() {
-        vec![0]
-    } else {
-        params
-            .split(';')
-            .map(|s| s.parse::<i64>().unwrap_or(-1))
-            .collect()
-    };
-
-    let mut k = 0;
-    while k < nums.len() {
-        let p = nums[k];
-        match p {
-            0 => {
-                *base = None;
-                *bold = false;
-            }
-            1 => *bold = true,
-            22 => *bold = false,
-            39 => *base = None,
-            30..=37 => *base = Some(xterm_color((p - 30) as u8)),
-            90..=97 => *base = Some(xterm_color((p - 90 + 8) as u8)),
-            38 => match nums.get(k + 1).copied() {
-                Some(5) => {
-                    if let Some(&n) = nums.get(k + 2) {
-                        if (0..=255).contains(&n) {
-                            *base = Some(xterm_color(n as u8));
-                        }
-                    }
-                    k += 2;
-                }
-                Some(2) => {
-                    let comp = |idx: usize| nums.get(idx).copied().unwrap_or(0).clamp(0, 255) as u8;
-                    *base = Some((comp(k + 2), comp(k + 3), comp(k + 4)));
-                    k += 4;
-                }
-                _ => {}
-            },
-            48 => match nums.get(k + 1).copied() {
-                Some(5) => k += 2,
-                Some(2) => k += 4,
-                _ => {}
-            },
-            _ => {} // background (40-47/100-107), reverse, etc. — ignored
-        }
-        k += 1;
-    }
-}
-
-/// Split a firmware line into coloured [`Segment`]s, interpreting ANSI SGR escapes
-/// and discarding other control sequences (cursor moves, erases, …).
-fn parse_ansi(input: &str) -> Vec<Segment> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut segs: Vec<Segment> = Vec::new();
-    let mut buf = String::new();
-    let mut base: Option<(u8, u8, u8)> = None;
-    let mut bold = false;
-
-    let flush = |buf: &mut String,
-                 base: Option<(u8, u8, u8)>,
-                 bold: bool,
-                 segs: &mut Vec<Segment>| {
-        if buf.is_empty() {
-            return;
-        }
-        let color = base.map(|rgb| readable(if bold { lighten(rgb, 0.18) } else { rgb }));
-        segs.push(Segment {
-            text: std::mem::take(buf),
-            color,
-        });
-    };
-
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\u{1b}' {
-            if i + 1 < chars.len() && chars[i + 1] == '[' {
-                // CSI sequence: scan to the final byte in 0x40..=0x7e.
-                let mut j = i + 2;
-                while j < chars.len() && !('\u{40}'..='\u{7e}').contains(&chars[j]) {
-                    j += 1;
-                }
-                if j < chars.len() {
-                    if chars[j] == 'm' {
-                        flush(&mut buf, base, bold, &mut segs);
-                        let params: String = chars[i + 2..j].iter().collect();
-                        apply_sgr(&params, &mut base, &mut bold);
-                    }
-                    i = j + 1;
-                    continue;
-                }
-                break; // unterminated sequence
-            }
-            i += 1; // lone ESC
-            continue;
-        }
-        buf.push(c);
-        i += 1;
-    }
-    flush(&mut buf, base, bold, &mut segs);
-    if segs.is_empty() {
-        segs.push(Segment {
-            text: String::new(),
-            color: None,
-        });
-    }
-    segs
-}
-
-/// Classify a received line. Only explicit Zephyr log markers promote a line to
-/// warning/error — the firmware also uses colour decoratively, so colour alone
-/// must not hide a line.
-fn classify_rx(plain: &str) -> Kind {
-    let l = plain.to_ascii_lowercase();
-    if l.contains("<err>") {
-        Kind::Err
-    } else if l.contains("<wrn>") {
-        Kind::Warn
-    } else {
-        Kind::Rx
-    }
-}
+use crate::theme::{
+    danger_button, darken, desc, primary, section, ACCENT, ACCENT_AMBER, BANNER_BG, CARD_BG,
+    HUE_CONN, HUE_DATA, HUE_INFO, HUE_MAG, HUE_REMOTE, HUE_RESET, HUE_SENSOR, HUE_STATS, HUE_SYSTEM,
+    HUE_TEMP, HUE_TEST, MUTED,
+};
 
 // ---- worker connection -----------------------------------------------------
 
@@ -412,91 +164,6 @@ impl Default for App {
             rdfu_sd_req: "0x00".to_owned(),
         }
     }
-}
-
-// ---- section styling helpers ----------------------------------------------
-
-/// Mix a colour toward black by `t` (0 = unchanged, 1 = black).
-fn darken(c: egui::Color32, t: f32) -> egui::Color32 {
-    let f = 1.0 - t.clamp(0.0, 1.0);
-    egui::Color32::from_rgb(
-        (c.r() as f32 * f) as u8,
-        (c.g() as f32 * f) as u8,
-        (c.b() as f32 * f) as u8,
-    )
-}
-
-/// Blend two colours by `t` (0 = a, 1 = b).
-fn mix(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
-    egui::Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
-}
-
-/// Coloured, bold header text for a section's CollapsingHeader.
-fn section_header(text: &str, hue: egui::Color32) -> egui::RichText {
-    egui::RichText::new(text)
-        .color(mix(hue, egui::Color32::WHITE, 0.18))
-        .strong()
-        .size(14.5)
-}
-
-/// A bordered, faintly-tinted frame that boxes a section's body in its hue.
-fn section_frame(hue: egui::Color32) -> egui::Frame {
-    egui::Frame::new()
-        .fill(darken(hue, 0.86)) // very dark wash of the hue
-        .stroke(egui::Stroke::new(1.0, darken(hue, 0.35)))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .outer_margin(egui::Margin {
-            left: 0,
-            right: 0,
-            top: 2,
-            bottom: 6,
-        })
-}
-
-/// Tint every default `ui.button(...)` in the current scope with the section hue,
-/// for the inactive / hovered / active states. Buttons that set an explicit
-/// `.fill(...)` (e.g. the red `danger_button`) are unaffected and still stand out.
-fn tint_buttons(ui: &mut egui::Ui, hue: egui::Color32) {
-    let v = ui.visuals_mut();
-    let text = mix(hue, egui::Color32::WHITE, 0.72);
-    // inactive
-    v.widgets.inactive.weak_bg_fill = darken(hue, 0.62);
-    v.widgets.inactive.fg_stroke.color = text;
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, darken(hue, 0.45));
-    // hovered (brighter)
-    v.widgets.hovered.weak_bg_fill = darken(hue, 0.42);
-    v.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, mix(hue, egui::Color32::WHITE, 0.15));
-    // active (pressed, brightest)
-    v.widgets.active.weak_bg_fill = darken(hue, 0.28);
-    v.widgets.active.fg_stroke.color = egui::Color32::WHITE;
-    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, mix(hue, egui::Color32::WHITE, 0.30));
-}
-
-/// Render one coloured, framed collapsing section.
-///
-/// Free function (not a method) so the `body` closure can capture `&mut self` at
-/// the call site without conflicting with a `&mut self` receiver here.
-fn section(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    title: &str,
-    hue: egui::Color32,
-    default_open: bool,
-    body: impl FnOnce(&mut egui::Ui),
-) {
-    egui::CollapsingHeader::new(section_header(title, hue))
-        .id_salt(id_salt)
-        .default_open(default_open)
-        .show_unindented(ui, |ui| {
-            section_frame(hue).show(ui, |ui| {
-                tint_buttons(ui, hue);
-                body(ui);
-            });
-        });
 }
 
 impl App {
@@ -902,7 +569,7 @@ impl App {
                         ui.label(egui::RichText::new(txt).color(MUTED));
                     });
                 });
-                Self::desc(ui, "Updates every tracker connected by USB. Wireless trackers aren't included.");
+                desc(ui, "Updates every tracker connected by USB. Wireless trackers aren't included.");
                 ui.add_space(6.0);
 
                 // Firmware picker row.
@@ -953,7 +620,7 @@ impl App {
                     } else {
                         "Update all trackers"
                     };
-                    if Self::primary(ui, !self.dfu_running, label, ACCENT_AMBER).clicked() {
+                    if primary(ui, !self.dfu_running, label, ACCENT_AMBER).clicked() {
                         let ctx = ui.ctx().clone();
                         self.start_dfu_update(&ctx);
                     }
@@ -1219,7 +886,7 @@ impl App {
                         );
                     });
                 });
-                Self::desc(ui, "Flashes the receiver dongle directly — pick a .hex or DFU .zip, then Flash. To enter DFU, hold a magnet to the dongle while plugging it in.");
+                desc(ui, "Flashes the receiver dongle directly — pick a .hex or DFU .zip, then Flash. To enter DFU, hold a magnet to the dongle while plugging it in.");
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
@@ -1280,7 +947,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let label = if self.rdfu_running { "Updating…" } else { "Flash receiver" };
-                    if Self::primary(ui, !self.rdfu_running, label, ACCENT_AMBER).clicked() {
+                    if primary(ui, !self.rdfu_running, label, ACCENT_AMBER).clicked() {
                         let ctx = ui.ctx().clone();
                         self.start_rdfu_update(&ctx);
                     }
@@ -1348,36 +1015,6 @@ impl App {
     }
 
     // ---- small widgets -----------------------------------------------------
-
-    /// A large, accent-filled primary button (used in the Common Tasks cards).
-    /// Disabled when `enabled` is false so it greys out before connecting.
-    fn primary(ui: &mut egui::Ui, enabled: bool, label: &str, fill: egui::Color32) -> egui::Response {
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(
-                egui::RichText::new(label)
-                    .size(15.0)
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            )
-            .fill(fill)
-            .min_size(egui::vec2(178.0, 36.0)),
-        )
-    }
-
-    /// A red-filled button for destructive / reboot / DFU actions, with a tooltip.
-    fn danger_button(ui: &mut egui::Ui, text: &str, tip: &str) -> bool {
-        ui.add(
-            egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE)).fill(DANGER),
-        )
-        .on_hover_text(tip)
-        .clicked()
-    }
-
-    /// A muted, wrapping description label shown beside a primary button.
-    fn desc(ui: &mut egui::Ui, text: &str) {
-        ui.add(egui::Label::new(egui::RichText::new(text).color(MUTED)).wrap());
-    }
 
     // ---- top connection bar ------------------------------------------------
 
@@ -1683,33 +1320,33 @@ impl App {
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Calibrate", ACCENT)
+                    if primary(ui, en, "Calibrate", ACCENT)
                         .on_hover_text("Sends: calibrate")
                         .clicked()
                     {
                         self.send_cmd("calibrate".into());
                     }
-                    Self::desc(ui, "Lay the tracker flat and still, then zero the gyroscope.");
+                    desc(ui, "Lay the tracker flat and still, then zero the gyroscope.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Pair", ACCENT)
+                    if primary(ui, en, "Pair", ACCENT)
                         .on_hover_text("Sends: pair")
                         .clicked()
                     {
                         self.send_cmd("pair".into());
                     }
-                    Self::desc(ui, "Put the tracker into pairing mode.");
+                    desc(ui, "Put the tracker into pairing mode.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Update (DFU)", ACCENT_AMBER)
+                    if primary(ui, en, "Update (DFU)", ACCENT_AMBER)
                         .on_hover_text("Sends: dfu")
                         .clicked()
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Reboot into the bootloader to flash firmware.");
+                    desc(ui, "Reboot into the bootloader to flash firmware.");
                 });
             });
 
@@ -1832,7 +1469,7 @@ impl App {
             section(ui, "t_conn", "Connection & pairing", HUE_CONN, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("pair").on_hover_text("Enter pairing mode to bond with a receiver").clicked() { self.send_cmd("pair".into()); }
-                    if Self::danger_button(ui, "clear pairing", "Forget the paired receiver") { self.send_cmd("clear".into()); }
+                    if danger_button(ui, "clear pairing", "Forget the paired receiver") { self.send_cmd("clear".into()); }
                     ui.separator();
                     if ui.button("tdma on").on_hover_text("Enable TDMA time-slotted radio scheduling").clicked() { self.send_cmd("tdma on".into()); }
                     if ui.button("tdma off").on_hover_text("Disable TDMA scheduling").clicked() { self.send_cmd("tdma off".into()); }
@@ -1868,9 +1505,9 @@ impl App {
             section(ui, "t_system", "System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("reboot").on_hover_text("Restart the tracker firmware").clicked() { self.send_cmd("reboot".into()); }
-                    if Self::danger_button(ui, "shutdown", "Power the tracker off") { self.send_cmd("shutdown".into()); }
-                    if Self::danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
-                    if Self::danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
+                    if danger_button(ui, "shutdown", "Power the tracker off") { self.send_cmd("shutdown".into()); }
+                    if danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
+                    if danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
                 });
             });
 
@@ -1883,7 +1520,7 @@ impl App {
                     if ui.button("reset mag").on_hover_text("Clear the magnetometer calibration").clicked() { self.send_cmd("reset mag".into()); }
                     if ui.button("reset bat").on_hover_text("Reset battery-gauge learning").clicked() { self.send_cmd("reset bat".into()); }
                     if ui.button("reset fusion").on_hover_text("Reset the sensor-fusion filter state").clicked() { self.send_cmd("reset fusion".into()); }
-                    if Self::danger_button(ui, "reset all", "Erase ALL calibration and settings") { self.send_cmd("reset all".into()); }
+                    if danger_button(ui, "reset all", "Erase ALL calibration and settings") { self.send_cmd("reset all".into()); }
                 });
             });
 
@@ -1912,33 +1549,33 @@ impl App {
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Pair a tracker", ACCENT)
+                    if primary(ui, en, "Pair a tracker", ACCENT)
                         .on_hover_text("Sends: pair")
                         .clicked()
                     {
                         self.send_cmd("pair".into());
                     }
-                    Self::desc(ui, "Listen for nearby trackers and bond them.");
+                    desc(ui, "Listen for nearby trackers and bond them.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Calibrate all", ACCENT)
+                    if primary(ui, en, "Calibrate all", ACCENT)
                         .on_hover_text("Sends: send all calibrate")
                         .clicked()
                     {
                         self.send_cmd("send all calibrate".into());
                     }
-                    Self::desc(ui, "Lay all trackers flat and still, then zero them at once.");
+                    desc(ui, "Lay all trackers flat and still, then zero them at once.");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if Self::primary(ui, en, "Enter DFU", ACCENT_AMBER)
+                    if primary(ui, en, "Enter DFU", ACCENT_AMBER)
                         .on_hover_text("Sends: dfu")
                         .clicked()
                     {
                         self.send_cmd("dfu".into());
                     }
-                    Self::desc(ui, "Reboot into the bootloader. If the command doesn't work, hold a magnet to the dongle while plugging in.");
+                    desc(ui, "Reboot into the bootloader. If the command doesn't work, hold a magnet to the dongle while plugging in.");
                 });
             });
 
@@ -1990,7 +1627,7 @@ impl App {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("remove last").on_hover_text("Unbond the most recently added tracker").clicked() { self.send_cmd("remove".into()); }
-                    if Self::danger_button(ui, "clear all pairings", "Forget every bonded tracker") { self.send_cmd("clear".into()); }
+                    if danger_button(ui, "clear all pairings", "Forget every bonded tracker") { self.send_cmd("clear".into()); }
                 });
             });
 
@@ -2025,8 +1662,8 @@ impl App {
             section(ui, "r_system", "System", HUE_SYSTEM, false, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("reboot").on_hover_text("Restart the receiver firmware").clicked() { self.send_cmd("reboot".into()); }
-                    if Self::danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
-                    if Self::danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
+                    if danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
+                    if danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
                 });
             });
 
@@ -2050,7 +1687,7 @@ impl App {
                         let i = self.r_ota_info.trim().to_owned();
                         if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("ota info {i}")); }
                     }
-                    if Self::danger_button(ui, "ota abort", "Cancel an in-progress OTA update") { self.send_cmd("ota abort".into()); }
+                    if danger_button(ui, "ota abort", "Cancel an in-progress OTA update") { self.send_cmd("ota abort".into()); }
                 });
             });
 
@@ -2078,8 +1715,8 @@ impl App {
                     if ui.button("meow").on_hover_text("").clicked() { self.send_cmd(format!("send {target} meow")); }
                     if ui.button("reboot").on_hover_text("Restart the target tracker(s)").clicked() { self.send_cmd(format!("send {target} reboot")); }
                     if ui.button("fusion reset").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} fusion")); }
-                    if Self::danger_button(ui, "shutdown", "Power off the target tracker(s)") { self.send_cmd(format!("send {target} shutdown")); }
-                    if Self::danger_button(ui, "clear pairing", "Make the target(s) forget this receiver") { self.send_cmd(format!("send {target} clear")); }
+                    if danger_button(ui, "shutdown", "Power off the target tracker(s)") { self.send_cmd(format!("send {target} shutdown")); }
+                    if danger_button(ui, "clear pairing", "Make the target(s) forget this receiver") { self.send_cmd(format!("send {target} clear")); }
                 });
 
                 ui.add_space(2.0);
@@ -2121,8 +1758,8 @@ impl App {
                     if ui.button("tdma off").on_hover_text("Disable TDMA scheduling on the target(s)").clicked() { self.send_cmd(format!("send {target} tdma off")); }
                     if ui.button("test on").on_hover_text("Enter test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test on")); }
                     if ui.button("test off").on_hover_text("Leave test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test off")); }
-                    if Self::danger_button(ui, "dfu", "Reboot the target(s) into the UF2 bootloader") { self.send_cmd(format!("send {target} dfu")); }
-                    if Self::danger_button(ui, "dfu ota", "Reboot the target(s) into OTA (BLE) update mode") { self.send_cmd(format!("send {target} dfu ota")); }
+                    if danger_button(ui, "dfu", "Reboot the target(s) into the UF2 bootloader") { self.send_cmd(format!("send {target} dfu")); }
+                    if danger_button(ui, "dfu ota", "Reboot the target(s) into OTA (BLE) update mode") { self.send_cmd(format!("send {target} dfu ota")); }
                 });
 
                 ui.add_space(4.0);
