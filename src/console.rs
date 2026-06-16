@@ -1,4 +1,3 @@
-
 //! Console text model and ANSI handling.
 //!
 //! The serial console renders firmware output that may contain ANSI SGR colour

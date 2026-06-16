@@ -24,146 +24,157 @@ use crate::dfu::{
 };
 use crate::nrfdfu::{run_receiver_dfu, NrfProgress};
 use crate::serial::{list_ports, run_worker, FromWorker, Mode, PortInfo, ToWorker};
-use crate::theme::{
-    danger_button, darken, desc, primary, section, ACCENT, ACCENT_AMBER, BANNER_BG, CARD_BG,
-    HUE_CONN, HUE_DATA, HUE_INFO, HUE_MAG, HUE_REMOTE, HUE_RESET, HUE_SENSOR, HUE_STATS, HUE_SYSTEM,
-    HUE_TEMP, HUE_TEST, MUTED,
-};
+use crate::theme::{ACCENT_AMBER, BANNER_BG};
 
 // ---- worker connection -----------------------------------------------------
 
-struct Connection {
-    cmd_tx: mpsc::Sender<ToWorker>,
-    evt_rx: mpsc::Receiver<FromWorker>,
-    connected: bool,
-    port_name: String,
+pub(crate) struct Connection {
+    pub(crate) cmd_tx: mpsc::Sender<ToWorker>,
+    pub(crate) evt_rx: mpsc::Receiver<FromWorker>,
+    pub(crate) connected: bool,
+    pub(crate) port_name: String,
 }
 
-pub struct App {
-    // Connection
-    ports: Vec<PortInfo>,
-    selected_port: Option<String>,
-    baud: u32,
-    line_ending_crlf: bool,
-    connection: Option<Connection>,
-
-    // View / console
-    mode: Mode,
-    log: Vec<LogLine>,
-    autoscroll: bool,
-    show_tx: bool,
-    show_warn: bool,
-    show_err: bool,
-    raw_input: String,
-
-    // Branding: the app icon, uploaded once as a texture for the in-app logo.
-    icon_texture: Option<egui::TextureHandle>,
-
-    // Tracker parameter fields
-    t_debug_dur: String,
-    t_sens_x: String,
-    t_sens_y: String,
-    t_sens_z: String,
-    t_set_addr: String,
-    t_channel: String,
-    t_tcal_test: String,
-    t_tcal_remove: String,
-
-    // Receiver parameter fields
-    r_add_addr: String,
-    r_pair_count: String,
-    r_stats_sec: String,
-    r_channel: String,
-    r_collect_id: String,
-    r_ota_info: String,
-
-    // Receiver -> tracker remote command fields
-    rem_target_all: bool,
-    rem_target_id: String,
-    rem_channel: String,
-    rem_sens_x: String,
-    rem_sens_y: String,
-    rem_sens_z: String,
-
-    // Batch firmware updater (DFU). The worker streams DfuProgress while running.
-    dfu_firmware: String,
-    dfu_include_existing: bool,
-    dfu_rx: Option<mpsc::Receiver<DfuProgress>>,
-    dfu_running: bool,
-    dfu_log: Vec<(DfuLevel, String)>,
-    dfu_result: Option<(usize, usize)>,
-
-    // Receiver firmware updater (nRF secure DFU over serial).
-    rdfu_package: String,
-    rdfu_rx: Option<mpsc::Receiver<NrfProgress>>,
-    rdfu_running: bool,
-    rdfu_log: Vec<(DfuLevel, String)>,
-    rdfu_result: Option<(usize, usize)>,
-    rdfu_total: usize,
-    rdfu_done: usize,
-    rdfu_sd_req: String,
+/// Connection + port-selection state.
+#[derive(Default)]
+pub(crate) struct ConnectionState {
+    pub(crate) ports: Vec<PortInfo>,
+    pub(crate) selected_port: Option<String>,
+    pub(crate) baud: u32,
+    pub(crate) line_ending_crlf: bool,
+    pub(crate) connection: Option<Connection>,
 }
 
-/// Severity for a line in the DFU progress log (styling only).
-#[derive(Copy, Clone, PartialEq)]
-enum DfuLevel {
-    Info,
-    Good,
-    Warn,
+/// Console output + its display filters and raw-entry box.
+pub(crate) struct ConsoleState {
+    pub(crate) log: Vec<LogLine>,
+    pub(crate) autoscroll: bool,
+    pub(crate) show_tx: bool,
+    pub(crate) show_warn: bool,
+    pub(crate) show_err: bool,
+    pub(crate) raw_input: String,
 }
 
-impl Default for App {
+impl Default for ConsoleState {
     fn default() -> Self {
         Self {
-            ports: Vec::new(),
-            selected_port: None,
-            baud: 115_200,
-            line_ending_crlf: false,
-            connection: None,
-            mode: Mode::Tracker,
             log: Vec::new(),
             autoscroll: true,
             show_tx: true,
             show_warn: false, // warnings hidden by default
             show_err: true,
             raw_input: String::new(),
-            icon_texture: None,
-            t_debug_dur: String::new(),
-            t_sens_x: String::new(),
-            t_sens_y: String::new(),
-            t_sens_z: String::new(),
-            t_set_addr: String::new(),
-            t_channel: String::new(),
-            t_tcal_test: String::new(),
-            t_tcal_remove: String::new(),
-            r_add_addr: String::new(),
-            r_pair_count: String::new(),
-            r_stats_sec: String::new(),
-            r_channel: String::new(),
-            r_collect_id: String::new(),
-            r_ota_info: String::new(),
+        }
+    }
+}
+
+/// Tracker-mode parameter input fields.
+#[derive(Default)]
+pub(crate) struct TrackerForms {
+    pub(crate) debug_dur: String,
+    pub(crate) sens_x: String,
+    pub(crate) sens_y: String,
+    pub(crate) sens_z: String,
+    pub(crate) set_addr: String,
+    pub(crate) channel: String,
+    pub(crate) tcal_test: String,
+    pub(crate) tcal_remove: String,
+}
+
+/// Receiver-mode parameter fields, including the receiver→tracker remote relay.
+pub(crate) struct ReceiverForms {
+    pub(crate) add_addr: String,
+    pub(crate) pair_count: String,
+    pub(crate) stats_sec: String,
+    pub(crate) channel: String,
+    pub(crate) collect_id: String,
+    pub(crate) ota_info: String,
+    pub(crate) rem_target_all: bool,
+    pub(crate) rem_target_id: String,
+    pub(crate) rem_channel: String,
+    pub(crate) rem_sens_x: String,
+    pub(crate) rem_sens_y: String,
+    pub(crate) rem_sens_z: String,
+}
+
+impl Default for ReceiverForms {
+    fn default() -> Self {
+        Self {
+            add_addr: String::new(),
+            pair_count: String::new(),
+            stats_sec: String::new(),
+            channel: String::new(),
+            collect_id: String::new(),
+            ota_info: String::new(),
             rem_target_all: true,
             rem_target_id: "0".to_owned(),
             rem_channel: String::new(),
             rem_sens_x: String::new(),
             rem_sens_y: String::new(),
             rem_sens_z: String::new(),
-            dfu_firmware: String::new(),
-            dfu_include_existing: false,
-            dfu_rx: None,
-            dfu_running: false,
-            dfu_log: Vec::new(),
-            dfu_result: None,
-            rdfu_package: String::new(),
-            rdfu_rx: None,
-            rdfu_running: false,
-            rdfu_log: Vec::new(),
-            rdfu_result: None,
-            rdfu_total: 0,
-            rdfu_done: 0,
-            rdfu_sd_req: "0x00".to_owned(),
         }
     }
+}
+
+/// Tracker batch firmware updater (UF2 drive-copy). The worker streams DfuProgress.
+#[derive(Default)]
+pub(crate) struct TrackerDfu {
+    pub(crate) firmware: String,
+    pub(crate) include_existing: bool,
+    pub(crate) rx: Option<mpsc::Receiver<DfuProgress>>,
+    pub(crate) running: bool,
+    pub(crate) log: Vec<(DfuLevel, String)>,
+    pub(crate) result: Option<(usize, usize)>,
+}
+
+/// Receiver firmware updater (nRF secure DFU over serial).
+pub(crate) struct ReceiverDfu {
+    pub(crate) package: String,
+    pub(crate) rx: Option<mpsc::Receiver<NrfProgress>>,
+    pub(crate) running: bool,
+    pub(crate) log: Vec<(DfuLevel, String)>,
+    pub(crate) result: Option<(usize, usize)>,
+    pub(crate) total: usize,
+    pub(crate) done: usize,
+    pub(crate) sd_req: String,
+}
+
+impl Default for ReceiverDfu {
+    fn default() -> Self {
+        Self {
+            package: String::new(),
+            rx: None,
+            running: false,
+            log: Vec::new(),
+            result: None,
+            total: 0,
+            done: 0,
+            sd_req: "0x00".to_owned(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct App {
+    pub(crate) conn: ConnectionState,
+    pub(crate) console: ConsoleState,
+    pub(crate) tf: TrackerForms,
+    pub(crate) rf: ReceiverForms,
+    pub(crate) tdfu: TrackerDfu,
+    pub(crate) rdfu: ReceiverDfu,
+
+    pub(crate) mode: Mode,
+
+    // Branding: the app icon, uploaded once as a texture for the in-app logo.
+    pub(crate) icon_texture: Option<egui::TextureHandle>,
+}
+
+/// Severity for a line in the DFU progress log (styling only).
+#[derive(Copy, Clone, PartialEq)]
+pub(crate) enum DfuLevel {
+    Info,
+    Good,
+    Warn,
 }
 
 impl App {
@@ -215,44 +226,44 @@ impl App {
 
     // ---- connection helpers ------------------------------------------------
 
-    fn refresh_ports(&mut self) {
-        self.ports = list_ports();
+    pub(crate) fn refresh_ports(&mut self) {
+        self.conn.ports = list_ports();
         let still_present = self
-            .selected_port
+            .conn.selected_port
             .as_ref()
-            .map_or(false, |s| self.ports.iter().any(|p| &p.name == s));
+            .map_or(false, |s| self.conn.ports.iter().any(|p| &p.name == s));
         if !still_present {
-            self.selected_port = self
-                .ports
+            self.conn.selected_port = self
+                .conn.ports
                 .iter()
                 .find(|p| p.guessed_mode.is_some())
-                .or_else(|| self.ports.first())
+                .or_else(|| self.conn.ports.first())
                 .map(|p| p.name.clone());
         }
     }
 
-    fn current_port_info(&self) -> Option<&PortInfo> {
-        let name = self.selected_port.as_deref()?;
-        self.ports.iter().find(|p| p.name == name)
+    pub(crate) fn current_port_info(&self) -> Option<&PortInfo> {
+        let name = self.conn.selected_port.as_deref()?;
+        self.conn.ports.iter().find(|p| p.name == name)
     }
 
-    fn is_connected(&self) -> bool {
-        self.connection.as_ref().map_or(false, |c| c.connected)
+    pub(crate) fn is_connected(&self) -> bool {
+        self.conn.connection.as_ref().map_or(false, |c| c.connected)
     }
 
-    fn connect(&mut self, ctx: &egui::Context) {
-        if self.connection.is_some() {
+    pub(crate) fn connect(&mut self, ctx: &egui::Context) {
+        if self.conn.connection.is_some() {
             return;
         }
-        let Some(name) = self.selected_port.clone() else {
+        let Some(name) = self.conn.selected_port.clone() else {
             self.push_warn("No port selected.".to_owned());
             return;
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<ToWorker>();
         let (evt_tx, evt_rx) = mpsc::channel::<FromWorker>();
-        let baud = self.baud;
-        let ending: &'static str = if self.line_ending_crlf { "\r\n" } else { "\n" };
+        let baud = self.conn.baud;
+        let ending: &'static str = if self.conn.line_ending_crlf { "\r\n" } else { "\n" };
         let ctx2 = ctx.clone();
         let worker_name = name.clone();
 
@@ -262,7 +273,7 @@ impl App {
 
         match spawned {
             Ok(_handle) => {
-                self.connection = Some(Connection {
+                self.conn.connection = Some(Connection {
                     cmd_tx,
                     evt_rx,
                     connected: false,
@@ -277,18 +288,18 @@ impl App {
         }
     }
 
-    fn disconnect(&mut self) {
-        if let Some(c) = &self.connection {
+    pub(crate) fn disconnect(&mut self) {
+        if let Some(c) = &self.conn.connection {
             let _ = c.cmd_tx.send(ToWorker::Disconnect);
         }
-        self.connection = None;
+        self.conn.connection = None;
         self.push_info("Disconnected.".to_owned());
     }
 
-    fn send_cmd(&mut self, cmd: String) {
-        let ready = self.connection.as_ref().map_or(false, |c| c.connected);
+    pub(crate) fn send_cmd(&mut self, cmd: String) {
+        let ready = self.conn.connection.as_ref().map_or(false, |c| c.connected);
         if ready {
-            if let Some(c) = &self.connection {
+            if let Some(c) = &self.conn.connection {
                 let _ = c.cmd_tx.send(ToWorker::Send(cmd));
             }
         } else {
@@ -299,11 +310,11 @@ impl App {
     // ---- console log -------------------------------------------------------
 
     fn push_line(&mut self, line: LogLine) {
-        self.log.push(line);
+        self.console.log.push(line);
         const MAX: usize = 5000;
-        if self.log.len() > MAX {
-            let excess = self.log.len() - MAX;
-            self.log.drain(0..excess);
+        if self.console.log.len() > MAX {
+            let excess = self.console.log.len() - MAX;
+            self.console.log.drain(0..excess);
         }
     }
 
@@ -314,7 +325,7 @@ impl App {
         });
     }
 
-    fn push_info(&mut self, t: String) {
+    pub(crate) fn push_info(&mut self, t: String) {
         self.log_simple(Kind::Info, t);
     }
     fn push_warn(&mut self, t: String) {
@@ -337,7 +348,7 @@ impl App {
     fn poll(&mut self) {
         let mut events = Vec::new();
         let mut dead = false;
-        if let Some(c) = &self.connection {
+        if let Some(c) = &self.conn.connection {
             loop {
                 match c.evt_rx.try_recv() {
                     Ok(e) => events.push(e),
@@ -353,7 +364,7 @@ impl App {
         for e in events {
             match e {
                 FromWorker::Connected { name } => {
-                    if let Some(c) = &mut self.connection {
+                    if let Some(c) = &mut self.conn.connection {
                         c.connected = true;
                         c.port_name = name.clone();
                     }
@@ -366,8 +377,8 @@ impl App {
             }
         }
 
-        if dead && self.connection.is_some() {
-            self.connection = None;
+        if dead && self.conn.connection.is_some() {
+            self.conn.connection = None;
             self.push_info("Connection closed.".to_owned());
         }
     }
@@ -375,11 +386,11 @@ impl App {
     // ---- batch firmware update (DFU) ---------------------------------------
 
     fn dfu_log_push(&mut self, level: DfuLevel, msg: String) {
-        self.dfu_log.push((level, msg));
+        self.tdfu.log.push((level, msg));
         const MAX: usize = 400;
-        if self.dfu_log.len() > MAX {
-            let excess = self.dfu_log.len() - MAX;
-            self.dfu_log.drain(0..excess);
+        if self.tdfu.log.len() > MAX {
+            let excess = self.tdfu.log.len() - MAX;
+            self.tdfu.log.drain(0..excess);
         }
     }
 
@@ -387,7 +398,7 @@ impl App {
     fn poll_dfu(&mut self) {
         let mut events = Vec::new();
         let mut closed = false;
-        if let Some(rx) = &self.dfu_rx {
+        if let Some(rx) = &self.tdfu.rx {
             loop {
                 match rx.try_recv() {
                     Ok(e) => events.push(e),
@@ -421,8 +432,8 @@ impl App {
                 }
                 DfuProgress::Warn(s) => self.dfu_log_push(DfuLevel::Warn, s),
                 DfuProgress::Finished { flashed, expected } => {
-                    self.dfu_result = Some((flashed, expected));
-                    self.dfu_running = false;
+                    self.tdfu.result = Some((flashed, expected));
+                    self.tdfu.running = false;
                     let lvl = if flashed == expected && expected > 0 {
                         DfuLevel::Good
                     } else {
@@ -437,16 +448,16 @@ impl App {
         }
 
         if closed {
-            self.dfu_rx = None;
-            if self.dfu_running {
-                self.dfu_running = false;
+            self.tdfu.rx = None;
+            if self.tdfu.running {
+                self.tdfu.running = false;
             }
         }
     }
 
     /// Tracker serial ports currently present (USB-connected trackers only).
-    fn tracker_ports(&self) -> Vec<String> {
-        self.ports
+    pub(crate) fn tracker_ports(&self) -> Vec<String> {
+        self.conn.ports
             .iter()
             .filter(|p| p.guessed_mode == Some(Mode::Tracker))
             .map(|p| p.name.clone())
@@ -454,13 +465,13 @@ impl App {
     }
 
     /// Kick off the batch update on a worker thread.
-    fn start_dfu_update(&mut self, ctx: &egui::Context) {
-        if self.dfu_running {
+    pub(crate) fn start_dfu_update(&mut self, ctx: &egui::Context) {
+        if self.tdfu.running {
             return;
         }
 
         // Validate the firmware path. Own the string so we can also log (&mut self).
-        let fw = self.dfu_firmware.trim().to_owned();
+        let fw = self.tdfu.firmware.trim().to_owned();
         if fw.is_empty() {
             self.dfu_log_push(DfuLevel::Warn, "Choose a .uf2 firmware file first.".to_owned());
             return;
@@ -484,7 +495,7 @@ impl App {
         let ports = self.tracker_ports();
         let pre_existing = drive_key_set(&find_uf2_drives());
 
-        if ports.is_empty() && !(self.dfu_include_existing && !pre_existing.is_empty()) {
+        if ports.is_empty() && !(self.tdfu.include_existing && !pre_existing.is_empty()) {
             self.dfu_log_push(
                 DfuLevel::Warn,
                 "No USB-connected trackers detected. Plug in a tracker (or tick \
@@ -496,20 +507,20 @@ impl App {
 
         // The device is about to reboot; release our own serial connection if it's
         // one of the targets, so the DFU worker can open the port.
-        if self.connection.is_some() {
+        if self.conn.connection.is_some() {
             self.disconnect();
         }
 
         // Reset run state.
-        self.dfu_log.clear();
-        self.dfu_result = None;
-        self.dfu_running = true;
+        self.tdfu.log.clear();
+        self.tdfu.result = None;
+        self.tdfu.running = true;
         self.dfu_log_push(
             DfuLevel::Info,
             format!(
                 "Starting update: {} tracker port(s){}.",
                 ports.len(),
-                if self.dfu_include_existing && !pre_existing.is_empty() {
+                if self.tdfu.include_existing && !pre_existing.is_empty() {
                     format!(", plus {} drive(s) already in DFU", pre_existing.len())
                 } else {
                     String::new()
@@ -518,10 +529,10 @@ impl App {
         );
 
         let (tx, rx) = mpsc::channel::<DfuProgress>();
-        self.dfu_rx = Some(rx);
+        self.tdfu.rx = Some(rx);
 
-        let line_ending: &'static str = if self.line_ending_crlf { "\r\n" } else { "\n" };
-        let include_existing = self.dfu_include_existing;
+        let line_ending: &'static str = if self.conn.line_ending_crlf { "\r\n" } else { "\n" };
+        let include_existing = self.tdfu.include_existing;
         let ctx2 = ctx.clone();
 
         let spawned = thread::Builder::new()
@@ -539,139 +550,17 @@ impl App {
             });
 
         if let Err(e) = spawned {
-            self.dfu_running = false;
-            self.dfu_rx = None;
+            self.tdfu.running = false;
+            self.tdfu.rx = None;
             self.dfu_log_push(DfuLevel::Warn, format!("Could not start updater: {e}"));
         }
     }
 
     /// The "Update all trackers" card UI.
-    fn dfu_update_card(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style())
-            .fill(CARD_BG)
-            .stroke(egui::Stroke::new(1.0, darken(ACCENT_AMBER, 0.45)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("UPDATE ALL TRACKERS")
-                            .size(13.0)
-                            .strong()
-                            .color(MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Live count of trackers we'd flash.
-                        let n = self.tracker_ports().len();
-                        let txt = if n == 1 {
-                            "1 tracker detected".to_owned()
-                        } else {
-                            format!("{n} trackers detected")
-                        };
-                        ui.label(egui::RichText::new(txt).color(MUTED));
-                    });
-                });
-                desc(ui, "Updates every tracker connected by USB. Wireless trackers aren't included.");
-                ui.add_space(6.0);
-
-                // Firmware picker row.
-                ui.horizontal(|ui| {
-                    ui.label("Firmware:");
-                    let avail = ui.available_width();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.dfu_firmware)
-                            .desired_width((avail - 96.0).max(120.0))
-                            .hint_text("path to firmware .uf2"),
-                    );
-                    if ui.add_enabled(!self.dfu_running, egui::Button::new("Browse…")).clicked() {
-                        // Native file dialog (XDG portal on Linux — no GTK needed).
-                        let mut dlg = rfd::FileDialog::new()
-                            .add_filter("UF2 firmware", &["uf2"])
-                            .set_title("Select tracker firmware (.uf2)");
-                        // Start in the directory of the current entry, if any.
-                        let cur = self.dfu_firmware.trim().to_owned();
-                        if !cur.is_empty() {
-                            if let Some(parent) = PathBuf::from(&cur).parent() {
-                                if parent.is_dir() {
-                                    dlg = dlg.set_directory(parent);
-                                }
-                            }
-                        }
-                        if let Some(path) = dlg.pick_file() {
-                            self.dfu_firmware = path.display().to_string();
-                        }
-                    }
-                });
-
-                ui.add_space(2.0);
-                ui.checkbox(
-                    &mut self.dfu_include_existing,
-                    "Also flash drives already in DFU mode",
-                )
-                .on_hover_text(
-                    "Off: only trackers that enter DFU from this action are flashed.\n\
-                     On: also flash any UF2 drive already mounted (e.g. a manually-reset board).",
-                );
-
-                ui.add_space(8.0);
-
-                // Action button + spinner.
-                ui.horizontal(|ui| {
-                    let label = if self.dfu_running {
-                        "Updating…"
-                    } else {
-                        "Update all trackers"
-                    };
-                    if primary(ui, !self.dfu_running, label, ACCENT_AMBER).clicked() {
-                        let ctx = ui.ctx().clone();
-                        self.start_dfu_update(&ctx);
-                    }
-                    if self.dfu_running {
-                        ui.add(egui::Spinner::new());
-                    }
-                    if !self.dfu_running && !self.dfu_log.is_empty() {
-                        if ui.button("Clear log").clicked() {
-                            self.dfu_log.clear();
-                            self.dfu_result = None;
-                        }
-                    }
-                });
-
-                // Progress log.
-                if !self.dfu_log.is_empty() {
-                    ui.add_space(6.0);
-                    egui::Frame::group(ui.style())
-                        .fill(egui::Color32::from_rgb(24, 27, 34))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .auto_shrink([false, true])
-                                .stick_to_bottom(true)
-                                .show(ui, |ui| {
-                                    for (lvl, msg) in &self.dfu_log {
-                                        let color = match lvl {
-                                            DfuLevel::Info => MUTED,
-                                            DfuLevel::Good => {
-                                                egui::Color32::from_rgb(120, 200, 130)
-                                            }
-                                            DfuLevel::Warn => {
-                                                egui::Color32::from_rgb(222, 180, 90)
-                                            }
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(msg)
-                                                .color(color)
-                                                .font(egui::FontId::monospace(12.0)),
-                                        );
-                                    }
-                                });
-                        });
-                }
-            });
-    }
-
     // ---- receiver firmware update (nRF secure DFU over serial) -------------
 
-    fn receiver_ports(&self) -> Vec<String> {
-        self.ports
+    pub(crate) fn receiver_ports(&self) -> Vec<String> {
+        self.conn.ports
             .iter()
             .filter(|p| {
                 p.guessed_mode == Some(Mode::Receiver)
@@ -682,18 +571,18 @@ impl App {
     }
 
     fn rdfu_log_push(&mut self, level: DfuLevel, msg: String) {
-        self.rdfu_log.push((level, msg));
+        self.rdfu.log.push((level, msg));
         const MAX: usize = 400;
-        if self.rdfu_log.len() > MAX {
-            let excess = self.rdfu_log.len() - MAX;
-            self.rdfu_log.drain(0..excess);
+        if self.rdfu.log.len() > MAX {
+            let excess = self.rdfu.log.len() - MAX;
+            self.rdfu.log.drain(0..excess);
         }
     }
 
     fn poll_rdfu(&mut self) {
         let mut events = Vec::new();
         let mut closed = false;
-        if let Some(rx) = &self.rdfu_rx {
+        if let Some(rx) = &self.rdfu.rx {
             loop {
                 match rx.try_recv() {
                     Ok(e) => events.push(e),
@@ -723,19 +612,19 @@ impl App {
                     self.rdfu_log_push(DfuLevel::Info, format!("{port}: bootloader ready, flashing…"));
                 }
                 NrfProgress::Total { bytes } => {
-                    self.rdfu_total = bytes;
-                    self.rdfu_done = 0;
+                    self.rdfu.total = bytes;
+                    self.rdfu.done = 0;
                 }
                 NrfProgress::Advance { bytes } => {
-                    self.rdfu_done = self.rdfu_done.saturating_add(bytes);
+                    self.rdfu.done = self.rdfu.done.saturating_add(bytes);
                 }
                 NrfProgress::Flashed { port } => {
                     self.rdfu_log_push(DfuLevel::Good, format!("{port}: flash complete"));
                 }
                 NrfProgress::Warn(s) => self.rdfu_log_push(DfuLevel::Warn, s),
                 NrfProgress::Finished { flashed, expected } => {
-                    self.rdfu_result = Some((flashed, expected));
-                    self.rdfu_running = false;
+                    self.rdfu.result = Some((flashed, expected));
+                    self.rdfu.running = false;
                     let lvl = if flashed == expected && expected > 0 {
                         DfuLevel::Good
                     } else {
@@ -747,18 +636,18 @@ impl App {
         }
 
         if closed {
-            self.rdfu_rx = None;
-            if self.rdfu_running {
-                self.rdfu_running = false;
+            self.rdfu.rx = None;
+            if self.rdfu.running {
+                self.rdfu.running = false;
             }
         }
     }
 
-    fn start_rdfu_update(&mut self, ctx: &egui::Context) {
-        if self.rdfu_running {
+    pub(crate) fn start_rdfu_update(&mut self, ctx: &egui::Context) {
+        if self.rdfu.running {
             return;
         }
-        let pkg = self.rdfu_package.trim().to_owned();
+        let pkg = self.rdfu.package.trim().to_owned();
         if pkg.is_empty() {
             self.rdfu_log_push(DfuLevel::Warn, "Choose a Nordic DFU .zip package first.".to_owned());
             return;
@@ -783,7 +672,7 @@ impl App {
 
         let mut ports = self.receiver_ports();
         let already: HashSet<String> = self
-            .ports
+            .conn.ports
             .iter()
             .filter(|p| p.bootloader == Some(crate::serial::BootloaderKind::NordicDfu))
             .map(|p| p.name.clone())
@@ -803,29 +692,29 @@ impl App {
             return;
         }
 
-        if self.connection.is_some() {
+        if self.conn.connection.is_some() {
             self.disconnect();
         }
 
-        self.rdfu_log.clear();
-        self.rdfu_result = None;
-        self.rdfu_total = 0;
-        self.rdfu_done = 0;
-        self.rdfu_running = true;
+        self.rdfu.log.clear();
+        self.rdfu.result = None;
+        self.rdfu.total = 0;
+        self.rdfu.done = 0;
+        self.rdfu.running = true;
         self.rdfu_log_push(
             DfuLevel::Info,
             format!("Starting receiver update on {} port(s).", ports.len()),
         );
 
         let (tx, rx) = mpsc::channel::<NrfProgress>();
-        self.rdfu_rx = Some(rx);
-        let line_ending: &'static str = if self.line_ending_crlf { "\r\n" } else { "\n" };
+        self.rdfu.rx = Some(rx);
+        let line_ending: &'static str = if self.conn.line_ending_crlf { "\r\n" } else { "\n" };
 
         // Parse the SoftDevice requirement field: comma-separated, hex (0x..) or
         // decimal. Empty or unparseable falls back to [0x00] (no SoftDevice).
         let sd_req: Vec<u16> = {
             let parsed: Vec<u16> = self
-                .rdfu_sd_req
+                .rdfu.sd_req
                 .split(',')
                 .filter_map(|tok| {
                     let t = tok.trim();
@@ -855,157 +744,19 @@ impl App {
             });
 
         if let Err(e) = spawned {
-            self.rdfu_running = false;
-            self.rdfu_rx = None;
+            self.rdfu.running = false;
+            self.rdfu.rx = None;
             self.rdfu_log_push(DfuLevel::Warn, format!("Could not start updater: {e}"));
         }
     }
 
     /// The "Update receiver firmware" card (receiver mode only).
-    fn rdfu_update_card(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style())
-            .fill(CARD_BG)
-            .stroke(egui::Stroke::new(1.0, darken(ACCENT_AMBER, 0.45)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("UPDATE RECEIVER FIRMWARE")
-                            .size(13.0)
-                            .strong()
-                            .color(MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let n = self.receiver_ports().len();
-                        ui.label(
-                            egui::RichText::new(if n == 1 {
-                                "1 receiver detected".to_owned()
-                            } else {
-                                format!("{n} receivers detected")
-                            })
-                            .color(MUTED),
-                        );
-                    });
-                });
-                desc(ui, "Flashes the receiver dongle directly — pick a .hex or DFU .zip, then Flash. To enter DFU, hold a magnet to the dongle while plugging it in.");
-                ui.add_space(6.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Firmware:");
-                    let avail = ui.available_width();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.rdfu_package)
-                            .desired_width((avail - 96.0).max(120.0))
-                            .hint_text("path to firmware .hex or .zip"),
-                    );
-                    if ui.add_enabled(!self.rdfu_running, egui::Button::new("Browse…")).clicked() {
-                        let mut dlg = rfd::FileDialog::new()
-                            .add_filter("Receiver firmware (.hex / DFU .zip)", &["hex", "zip"])
-                            .set_title("Select receiver firmware");
-                        let cur = self.rdfu_package.trim().to_owned();
-                        if !cur.is_empty() {
-                            if let Some(parent) = PathBuf::from(&cur).parent() {
-                                if parent.is_dir() {
-                                    dlg = dlg.set_directory(parent);
-                                }
-                            }
-                        }
-                        if let Some(path) = dlg.pick_file() {
-                            self.rdfu_package = path.display().to_string();
-                        }
-                    }
-                });
-
-                // Advanced: SoftDevice requirement (only used when flashing a .hex).
-                // Default 0x00 = no SoftDevice, correct for the ESB-based receiver.
-                let is_hex = self
-                    .rdfu_package
-                    .trim()
-                    .to_ascii_lowercase()
-                    .ends_with(".hex");
-                if is_hex {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("SoftDevice req:").color(MUTED));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.rdfu_sd_req)
-                                .desired_width(120.0)
-                                .hint_text("0x00"),
-                        )
-                        .on_hover_text(
-                            "Advanced — leave this at 0x00. It's the SoftDevice firmware-ID the image \
-                             requires; the bootloader rejects a mismatch (error 0x07). This receiver has \
-                             no SoftDevice, so 0x00 is correct and you shouldn't need to change it. Only \
-                             touch this if flashing fails with error 0x07.",
-                        );
-                        ui.label(
-                            egui::RichText::new("leave at 0x00")
-                                .color(MUTED)
-                                .small(),
-                        );
-                    });
-                }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let label = if self.rdfu_running { "Updating…" } else { "Flash receiver" };
-                    if primary(ui, !self.rdfu_running, label, ACCENT_AMBER).clicked() {
-                        let ctx = ui.ctx().clone();
-                        self.start_rdfu_update(&ctx);
-                    }
-                    if self.rdfu_running {
-                        ui.add(egui::Spinner::new());
-                    }
-                    if !self.rdfu_running && !self.rdfu_log.is_empty() {
-                        if ui.button("Clear log").clicked() {
-                            self.rdfu_log.clear();
-                            self.rdfu_result = None;
-                        }
-                    }
-                });
-
-                if self.rdfu_running && self.rdfu_total > 0 {
-                    let frac = (self.rdfu_done as f32 / self.rdfu_total as f32).clamp(0.0, 1.0);
-                    ui.add_space(4.0);
-                    ui.add(
-                        egui::ProgressBar::new(frac)
-                            .show_percentage()
-                            .desired_width(ui.available_width()),
-                    );
-                }
-
-                if !self.rdfu_log.is_empty() {
-                    ui.add_space(6.0);
-                    egui::Frame::group(ui.style())
-                        .fill(egui::Color32::from_rgb(24, 27, 34))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .auto_shrink([false, true])
-                                .stick_to_bottom(true)
-                                .show(ui, |ui| {
-                                    for (lvl, msg) in &self.rdfu_log {
-                                        let color = match lvl {
-                                            DfuLevel::Info => MUTED,
-                                            DfuLevel::Good => egui::Color32::from_rgb(120, 200, 130),
-                                            DfuLevel::Warn => egui::Color32::from_rgb(222, 180, 90),
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(msg)
-                                                .color(color)
-                                                .font(egui::FontId::monospace(12.0)),
-                                        );
-                                    }
-                                });
-                        });
-                }
-            });
-    }
-
     /// The current `send` target string (`"all"` or a tracker id).
-    fn remote_target(&self) -> String {
-        if self.rem_target_all {
+    pub(crate) fn remote_target(&self) -> String {
+        if self.rf.rem_target_all {
             "all".to_owned()
         } else {
-            let id = self.rem_target_id.trim();
+            let id = self.rf.rem_target_id.trim();
             if id.is_empty() {
                 "0".to_owned()
             } else {
@@ -1018,787 +769,12 @@ impl App {
 
     // ---- top connection bar ------------------------------------------------
 
-    fn connection_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.add_space(6.0);
-
-        ui.horizontal_wrapped(|ui| {
-            if let Some(tex) = &self.icon_texture {
-                ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(26.0, 26.0)));
-                ui.add_space(4.0);
-            }
-            ui.heading("SlimeNRF Serial Control");
-            ui.separator();
-            if self.is_connected() {
-                let name = self
-                    .connection
-                    .as_ref()
-                    .map(|c| c.port_name.clone())
-                    .unwrap_or_default();
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 120), format!("* {name}"));
-            } else if self.connection.is_some() {
-                ui.colored_label(egui::Color32::from_rgb(220, 190, 90), "... connecting…");
-            } else {
-                ui.colored_label(egui::Color32::GRAY, "- disconnected");
-            }
-        });
-
-        ui.add_space(4.0);
-
-        // Precompute dropdown contents so the combo closure doesn't borrow self.
-        // (port_name, friendly label, id string, is_slimenrf_or_bootloader)
-        let port_items: Vec<(String, String, String, bool)> = self
-            .ports
-            .iter()
-            .map(|p| {
-                (
-                    p.name.clone(),
-                    p.label(),
-                    p.ids(),
-                    p.guessed_mode.is_some() || p.in_bootloader(),
-                )
-            })
-            .collect();
-        let current = self.selected_port.clone();
-        let current_label = self
-            .current_port_info()
-            .map(|p| p.label())
-            .or_else(|| current.clone())
-            .unwrap_or_else(|| "<no port detected>".to_owned());
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Port:");
-            let mut new_selection: Option<String> = None;
-            egui::ComboBox::from_id_salt("port_combo")
-                .selected_text(current_label)
-                .width(380.0)
-                .show_ui(ui, |ui| {
-                    if port_items.is_empty() {
-                        ui.label("(no serial ports found)");
-                    }
-                    for (name, label, ids, known) in &port_items {
-                        let selected = current.as_deref() == Some(name.as_str());
-                        let text = if *known {
-                            egui::RichText::new(label).strong()
-                        } else {
-                            egui::RichText::new(label)
-                        };
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(selected, text).clicked() {
-                                new_selection = Some(name.clone());
-                            }
-                            ui.label(egui::RichText::new(format!("[{ids}]")).weak().small());
-                        });
-                    }
-                });
-            if let Some(sel) = new_selection {
-                self.selected_port = Some(sel);
-            }
-
-            if ui.button("Refresh").clicked() {
-                self.refresh_ports();
-            }
-
-            ui.separator();
-            ui.label("Baud:");
-            egui::ComboBox::from_id_salt("baud_combo")
-                .selected_text(self.baud.to_string())
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    for b in [9600u32, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1_000_000] {
-                        ui.selectable_value(&mut self.baud, b, b.to_string());
-                    }
-                })
-                .response
-                .on_hover_text("Ignored for USB devices — they enumerate as virtual COM ports.");
-
-            ui.separator();
-            if self.connection.is_some() {
-                if ui.button("Disconnect").clicked() {
-                    self.disconnect();
-                }
-            } else {
-                let enabled = self.selected_port.is_some();
-                if ui
-                    .add_enabled(
-                        enabled,
-                        egui::Button::new(
-                            egui::RichText::new("Connect").strong().color(egui::Color32::WHITE),
-                        )
-                        .fill(ACCENT),
-                    )
-                    .clicked()
-                {
-                    self.connect(ctx);
-                }
-            }
-
-            ui.checkbox(&mut self.line_ending_crlf, "CRLF")
-                .on_hover_text("Append \\r\\n instead of \\n to each command");
-        });
-
-        ui.add_space(2.0);
-
-        let detected = self.current_port_info().and_then(|p| p.guessed_mode);
-        ui.horizontal(|ui| {
-            ui.label("Mode:");
-            ui.selectable_value(&mut self.mode, Mode::Tracker, "Tracker");
-            ui.selectable_value(&mut self.mode, Mode::Receiver, "Receiver");
-            if let Some(m) = detected {
-                ui.separator();
-                ui.label(egui::RichText::new(format!("auto-detected: {}", m.label())).weak());
-            }
-        });
-
-        // Details of the selected port, so it's clear what each COM/tty actually is.
-        if let Some(info) = self.current_port_info() {
-            let name = info.display_name();
-            let ids = info.ids();
-            let serial = info.serial_number.clone();
-            let boot = info.bootloader;
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Device:").color(MUTED));
-                ui.label(egui::RichText::new(name).strong());
-                ui.label(egui::RichText::new(format!("· USB {ids}")).color(MUTED));
-                if let Some(sn) = serial {
-                    if !sn.is_empty() {
-                        ui.label(egui::RichText::new(format!("· s/n {sn}")).color(MUTED));
-                    }
-                }
-            });
-            match boot {
-                Some(crate::serial::BootloaderKind::NordicDfu) => {
-                    ui.label(
-                        egui::RichText::new(
-                            "Receiver is in DFU mode — use the \"Update receiver firmware\" panel below. (The serial console won't respond here.)",
-                        )
-                        .color(ACCENT_AMBER),
-                    );
-                }
-                Some(crate::serial::BootloaderKind::Uf2) => {
-                    ui.label(
-                        egui::RichText::new(
-                            "This board is in UF2 bootloader mode — use the firmware updater, not the console.",
-                        )
-                        .color(ACCENT_AMBER),
-                    );
-                }
-                None => {}
-            }
-        }
-
-        ui.add_space(6.0);
-    }
-
     // ---- right-hand console ------------------------------------------------
-
-    fn console_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("console_header").show_inside(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.heading("Console");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Clear").clicked() {
-                        self.log.clear();
-                    }
-                });
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Show:").color(MUTED));
-                ui.checkbox(&mut self.show_tx, "sent")
-                    .on_hover_text("Echo the commands you send");
-                ui.checkbox(&mut self.show_err, "errors")
-                    .on_hover_text("Failures and <err> log lines");
-                ui.checkbox(&mut self.show_warn, "warnings")
-                    .on_hover_text("Validation notices and <wrn> log lines (off by default)");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.checkbox(&mut self.autoscroll, "auto-scroll");
-                });
-            });
-            ui.add_space(2.0);
-        });
-
-        egui::Panel::bottom("console_input").show_inside(ui, |ui| {
-            ui.add_space(4.0);
-            let connected = self.is_connected();
-            ui.add_enabled_ui(connected, |ui| {
-                ui.horizontal(|ui| {
-                    let hint = if connected {
-                        "raw command — Enter to send"
-                    } else {
-                        "connect a device to send commands"
-                    };
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.raw_input)
-                            .desired_width(ui.available_width() - 64.0)
-                            .hint_text(hint),
-                    );
-                    let enter =
-                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let clicked = ui.button("Send").clicked();
-                    if enter || clicked {
-                        let cmd = self.raw_input.trim().to_owned();
-                        if !cmd.is_empty() {
-                            self.send_cmd(cmd);
-                        }
-                        self.raw_input.clear();
-                        resp.request_focus();
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        });
-
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .stick_to_bottom(self.autoscroll)
-                .show(ui, |ui| {
-                    // Tighter, terminal-like line spacing than the global default,
-                    // so log output reads as a cohesive block.
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    if self.log.is_empty() {
-                        ui.label(
-                            egui::RichText::new(
-                                "No output yet. Connect, then try Calibrate — or type `help`.",
-                            )
-                            .color(MUTED),
-                        );
-                    }
-                    let maxw = ui.available_width();
-                    let mono = egui::FontId::monospace(13.0);
-                    for line in &self.log {
-                        match line.kind {
-                            Kind::Tx if !self.show_tx => continue,
-                            Kind::Warn if !self.show_warn => continue,
-                            Kind::Err if !self.show_err => continue,
-                            _ => {}
-                        }
-                        let mut job = egui::text::LayoutJob::default();
-                        job.wrap.max_width = maxw;
-                        let prefix = line.kind.prefix();
-                        if !prefix.is_empty() {
-                            job.append(
-                                prefix,
-                                0.0,
-                                egui::text::TextFormat {
-                                    font_id: mono.clone(),
-                                    color: line.kind.default_color(),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        for seg in &line.segments {
-                            let color = seg.color.unwrap_or_else(|| line.kind.default_color());
-                            job.append(
-                                &seg.text,
-                                0.0,
-                                egui::text::TextFormat {
-                                    font_id: mono.clone(),
-                                    color,
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        ui.label(job);
-                    }
-                });
-        });
-    }
 
     // ---- tracker view ------------------------------------------------------
 
-    fn tracker_panel(&mut self, ui: &mut egui::Ui) {
-        let en = self.is_connected();
-
-        // Common Tasks card
-        egui::Frame::group(ui.style())
-            .fill(CARD_BG)
-            .stroke(egui::Stroke::new(1.0, darken(ACCENT, 0.4)))
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new("COMMON TASKS").size(13.0).strong().color(MUTED));
-                ui.add_space(6.0);
-
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Calibrate", ACCENT)
-                        .on_hover_text("Sends: calibrate")
-                        .clicked()
-                    {
-                        self.send_cmd("calibrate".into());
-                    }
-                    desc(ui, "Lay the tracker flat and still, then zero the gyroscope.");
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Pair", ACCENT)
-                        .on_hover_text("Sends: pair")
-                        .clicked()
-                    {
-                        self.send_cmd("pair".into());
-                    }
-                    desc(ui, "Put the tracker into pairing mode.");
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Update (DFU)", ACCENT_AMBER)
-                        .on_hover_text("Sends: dfu")
-                        .clicked()
-                    {
-                        self.send_cmd("dfu".into());
-                    }
-                    desc(ui, "Reboot into the bootloader to flash firmware.");
-                });
-            });
-
-        ui.add_space(10.0);
-        self.dfu_update_card(ui);
-
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
-        ui.separator();
-        ui.add_space(2.0);
-
-        ui.add_enabled_ui(en, |ui| {
-            section(ui, "t_info", "Device information", HUE_INFO, true, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("info").on_hover_text("Firmware version, IDs and current settings").clicked() { self.send_cmd("info".into()); }
-                    if ui.button("uptime").on_hover_text("Time since the tracker last booted").clicked() { self.send_cmd("uptime".into()); }
-                    if ui.button("battery").on_hover_text("Battery voltage and charge level").clicked() { self.send_cmd("battery".into()); }
-                    if ui.button("nvs").on_hover_text("Dump stored non-volatile settings (NVS)").clicked() { self.send_cmd("nvs".into()); }
-                    if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
-                    if ui.button("ping").on_hover_text("Check the tracker is alive and responding").clicked() { self.send_cmd("ping".into()); }
-                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd("meow".into()); }
-                });
-            });
-
-            section(ui, "t_sensor", "Sensors & calibration", HUE_SENSOR, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("scan").on_hover_text("Detect and identify the attached IMU(s)").clicked() { self.send_cmd("scan".into()); }
-                    if ui.button("calibrate (ZRO)").on_hover_text("Zero the gyroscope — keep the tracker flat and still").clicked() { self.send_cmd("calibrate".into()); }
-                    if ui.button("6-side").on_hover_text("Six-sided accelerometer calibration — rest it on each face when prompted").clicked() { self.send_cmd("6-side".into()); }
-                    if ui.button("range").on_hover_text("Show the IMU accelerometer/gyro full-scale range").clicked() { self.send_cmd("range".into()); }
-                    if ui.button("range reset").on_hover_text("Restore the default IMU full-scale range").clicked() { self.send_cmd("range reset".into()); }
-                });
-                ui.add_space(4.0);
-                egui::Grid::new("t_sensor_params")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("debug duration (1–60 s):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_debug_dur).desired_width(50.0).hint_text("1"));
-                            if ui.button("debug").on_hover_text("Stream raw sensor data for N seconds (1–60)").clicked() {
-                                let d = self.t_debug_dur.trim().to_owned();
-                                if d.is_empty() { self.send_cmd("debug".into()); } else { self.send_cmd(format!("debug {d}")); }
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("gyro sensitivity (deg diff) X/Y/Z:");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_x).desired_width(56.0).hint_text("x"));
-                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_y).desired_width(56.0).hint_text("y"));
-                            ui.add(egui::TextEdit::singleline(&mut self.t_sens_z).desired_width(56.0).hint_text("z"));
-                            if ui.button("set sens").on_hover_text("Set per-axis gyro sensitivity correction").clicked() {
-                                let x = self.t_sens_x.trim().to_owned();
-                                let y = self.t_sens_y.trim().to_owned();
-                                let z = self.t_sens_z.trim().to_owned();
-                                if x.is_empty() || y.is_empty() || z.is_empty() {
-                                    self.push_info("Enter all three sens values (X, Y, Z).".into());
-                                } else {
-                                    self.send_cmd(format!("sens {x},{y},{z}"));
-                                }
-                            }
-                            if ui.button("sens reset").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("sens reset".into()); }
-                        });
-                        ui.end_row();
-                    });
-            });
-
-            section(ui, "t_mag", "Magnetometer", HUE_MAG, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("status (mag)").on_hover_text("Show magnetometer state").clicked() { self.send_cmd("mag".into()); }
-                    if ui.button("mag on").on_hover_text("Enable the magnetometer for heading correction").clicked() { self.send_cmd("mag on".into()); }
-                    if ui.button("mag off").on_hover_text("Disable the magnetometer").clicked() { self.send_cmd("mag off".into()); }
-                    if ui.button("mag clear").on_hover_text("Erase the stored magnetometer calibration").clicked() { self.send_cmd("mag clear".into()); }
-                    if ui.button("mag cal").on_hover_text("Start magnetometer calibration — rotate through all orientations").clicked() { self.send_cmd("mag cal".into()); }
-                });
-            });
-
-            section(ui, "t_tcal", "Temperature calibration (tcal)", HUE_TEMP, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal status").on_hover_text("Show temperature-calibration state").clicked() { self.send_cmd("tcal status".into()); }
-                    if ui.button("tcal on").on_hover_text("Enable temperature compensation").clicked() { self.send_cmd("tcal on".into()); }
-                    if ui.button("tcal off").on_hover_text("Disable temperature compensation").clicked() { self.send_cmd("tcal off".into()); }
-                    if ui.button("tcal dump").on_hover_text("Print the temperature-calibration table").clicked() { self.send_cmd("tcal dump".into()); }
-                    if ui.button("tcal check").on_hover_text("Report calibration coverage / quality").clicked() { self.send_cmd("tcal check".into()); }
-                    if ui.button("tcal clear").on_hover_text("Erase the temperature-calibration table").clicked() { self.send_cmd("tcal clear".into()); }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal auto on").on_hover_text("Collect temperature-calibration data automatically").clicked() { self.send_cmd("tcal auto on".into()); }
-                    if ui.button("tcal auto off").on_hover_text("Stop automatic temperature-calibration collection").clicked() { self.send_cmd("tcal auto off".into()); }
-                    if ui.button("tcal boot on").on_hover_text("Recalibrate temperature on every boot").clicked() { self.send_cmd("tcal boot on".into()); }
-                    if ui.button("tcal boot off").on_hover_text("Don't recalibrate temperature on boot").clicked() { self.send_cmd("tcal boot off".into()); }
-                });
-                egui::Grid::new("t_tcal_params")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("test temp (°C):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_tcal_test).desired_width(60.0).hint_text("current"));
-                            if ui.button("tcal test").on_hover_text("Predict the gyro offset at a given temperature (°C)").clicked() {
-                                let t = self.t_tcal_test.trim().to_owned();
-                                if t.is_empty() { self.send_cmd("tcal test".into()); } else { self.send_cmd(format!("tcal test {t}")); }
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("remove sample index:");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_tcal_remove).desired_width(50.0).hint_text("0"));
-                            if ui.button("tcal remove").on_hover_text("Delete one temperature-calibration sample by index").clicked() {
-                                let i = self.t_tcal_remove.trim().to_owned();
-                                if i.is_empty() { self.push_info("Enter an index to remove.".into()); } else { self.send_cmd(format!("tcal remove {i}")); }
-                            }
-                        });
-                        ui.end_row();
-                    });
-            });
-
-            section(ui, "t_conn", "Connection & pairing", HUE_CONN, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("pair").on_hover_text("Enter pairing mode to bond with a receiver").clicked() { self.send_cmd("pair".into()); }
-                    if danger_button(ui, "clear pairing", "Forget the paired receiver") { self.send_cmd("clear".into()); }
-                    ui.separator();
-                    if ui.button("tdma on").on_hover_text("Enable TDMA time-slotted radio scheduling").clicked() { self.send_cmd("tdma on".into()); }
-                    if ui.button("tdma off").on_hover_text("Disable TDMA scheduling").clicked() { self.send_cmd("tdma off".into()); }
-                });
-                ui.add_space(4.0);
-                egui::Grid::new("t_conn_params")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("receiver address (16 hex):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_set_addr).desired_width(170.0).hint_text("0011223344556677"));
-                            if ui.button("set").on_hover_text("Bond to a receiver by its 16 hex-digit address").clicked() {
-                                let a = self.t_set_addr.trim().to_owned();
-                                if a.is_empty() { self.push_info("Enter a 16 hex-digit address.".into()); } else { self.send_cmd(format!("set {a}")); }
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("RF channel (1–100):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.t_channel).desired_width(56.0).hint_text("25"));
-                            if ui.button("set channel").on_hover_text("Set the RF channel (1–100)").clicked() {
-                                let c = self.t_channel.trim().to_owned();
-                                if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
-                            }
-                            if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
-                        });
-                        ui.end_row();
-                    });
-            });
-
-            section(ui, "t_system", "System", HUE_SYSTEM, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("reboot").on_hover_text("Restart the tracker firmware").clicked() { self.send_cmd("reboot".into()); }
-                    if danger_button(ui, "shutdown", "Power the tracker off") { self.send_cmd("shutdown".into()); }
-                    if danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
-                    if danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
-                });
-            });
-
-            section(ui, "t_reset", "Reset / clear (careful)", HUE_RESET, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("reset zro").on_hover_text("Clear the stored gyroscope zero offset").clicked() { self.send_cmd("reset zro".into()); }
-                    if ui.button("reset acc").on_hover_text("Clear the accelerometer calibration").clicked() { self.send_cmd("reset acc".into()); }
-                    if ui.button("reset sens").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("reset sens".into()); }
-                    if ui.button("reset tcal").on_hover_text("Clear the temperature-calibration table").clicked() { self.send_cmd("reset tcal".into()); }
-                    if ui.button("reset mag").on_hover_text("Clear the magnetometer calibration").clicked() { self.send_cmd("reset mag".into()); }
-                    if ui.button("reset bat").on_hover_text("Reset battery-gauge learning").clicked() { self.send_cmd("reset bat".into()); }
-                    if ui.button("reset fusion").on_hover_text("Reset the sensor-fusion filter state").clicked() { self.send_cmd("reset fusion".into()); }
-                    if danger_button(ui, "reset all", "Erase ALL calibration and settings") { self.send_cmd("reset all".into()); }
-                });
-            });
-
-            section(ui, "t_test", "Test mode", HUE_TEST, false, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("test on").on_hover_text("Enter test / diagnostic mode").clicked() { self.send_cmd("test on".into()); }
-                    if ui.button("test off").on_hover_text("Leave test mode").clicked() { self.send_cmd("test off".into()); }
-                });
-            });
-        });
-
-        ui.add_space(8.0);
-    }
-
     // ---- receiver view -----------------------------------------------------
 
-    fn receiver_panel(&mut self, ui: &mut egui::Ui) {
-        let en = self.is_connected();
-
-        // Common Tasks card
-        egui::Frame::group(ui.style())
-            .fill(CARD_BG)
-            .stroke(egui::Stroke::new(1.0, darken(ACCENT, 0.4)))
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new("COMMON TASKS").size(13.0).strong().color(MUTED));
-                ui.add_space(6.0);
-
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Pair a tracker", ACCENT)
-                        .on_hover_text("Sends: pair")
-                        .clicked()
-                    {
-                        self.send_cmd("pair".into());
-                    }
-                    desc(ui, "Listen for nearby trackers and bond them.");
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Calibrate all", ACCENT)
-                        .on_hover_text("Sends: send all calibrate")
-                        .clicked()
-                    {
-                        self.send_cmd("send all calibrate".into());
-                    }
-                    desc(ui, "Lay all trackers flat and still, then zero them at once.");
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if primary(ui, en, "Enter DFU", ACCENT_AMBER)
-                        .on_hover_text("Sends: dfu")
-                        .clicked()
-                    {
-                        self.send_cmd("dfu".into());
-                    }
-                    desc(ui, "Reboot into the bootloader. If the command doesn't work, hold a magnet to the dongle while plugging in.");
-                });
-            });
-
-        ui.add_space(10.0);
-        self.rdfu_update_card(ui);
-
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new("ALL COMMANDS").size(13.0).strong().color(MUTED));
-        ui.separator();
-        ui.add_space(2.0);
-
-        ui.add_enabled_ui(en, |ui| {
-            section(ui, "r_info", "Device information", HUE_INFO, true, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("info").on_hover_text("Firmware version, IDs and settings").clicked() { self.send_cmd("info".into()); }
-                    if ui.button("uptime").on_hover_text("Time since the receiver booted").clicked() { self.send_cmd("uptime".into()); }
-                    if ui.button("list (paired)").on_hover_text("List bonded trackers and their slots").clicked() { self.send_cmd("list".into()); }
-                    if ui.button("help").on_hover_text("List every console command the firmware supports").clicked() { self.send_cmd("help".into()); }
-                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd("meow".into()); }
-                });
-            });
-
-            section(ui, "r_paired", "Paired devices", HUE_CONN, false, |ui| {
-                egui::Grid::new("r_paired_params")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("add address (12 hex):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.r_add_addr).desired_width(150.0).hint_text("001122334455"));
-                            if ui.button("add").on_hover_text("Manually bond a tracker by its 12 hex-digit address").clicked() {
-                                let a = self.r_add_addr.trim().to_owned();
-                                if a.is_empty() { self.push_info("Enter a 12 hex-digit address.".into()); } else { self.send_cmd(format!("add {a}")); }
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("pair count (blank = until timeout):");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.r_pair_count).desired_width(50.0).hint_text("all"));
-                            if ui.button("pair").on_hover_text("Listen for trackers in pairing mode (optionally a fixed count)").clicked() {
-                                let c = self.r_pair_count.trim().to_owned();
-                                if c.is_empty() { self.send_cmd("pair".into()); } else { self.send_cmd(format!("pair {c}")); }
-                            }
-                            if ui.button("exit pairing").on_hover_text("Stop listening for new trackers").clicked() { self.send_cmd("exit".into()); }
-                        });
-                        ui.end_row();
-                    });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("remove last").on_hover_text("Unbond the most recently added tracker").clicked() { self.send_cmd("remove".into()); }
-                    if danger_button(ui, "clear all pairings", "Forget every bonded tracker") { self.send_cmd("clear".into()); }
-                });
-            });
-
-            section(ui, "r_stats", "Statistics", HUE_STATS, false, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("stats (toggle)").on_hover_text("Toggle live link-statistics output").clicked() { self.send_cmd("stats".into()); }
-                    ui.separator();
-                    ui.label("for N seconds:");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_stats_sec).desired_width(50.0).hint_text("30"));
-                    if ui.button("stats N").on_hover_text("Print link statistics for N seconds, then stop").clicked() {
-                        let s = self.r_stats_sec.trim().to_owned();
-                        if s.is_empty() { self.push_info("Enter a duration in seconds.".into()); } else { self.send_cmd(format!("stats {s}")); }
-                    }
-                    if ui.button("resetstats").on_hover_text("Zero the statistics counters").clicked() { self.send_cmd("resetstats".into()); }
-                });
-            });
-
-            section(ui, "r_channel", "RF channel (local receiver)", HUE_SENSOR, false, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("channel (1–100):");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("set channel").on_hover_text("Set the receiver's RF channel (1–100)").clicked() {
-                        let c = self.r_channel.trim().to_owned();
-                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("channel {c}")); }
-                    }
-                    if ui.button("clearchannel").on_hover_text("Reset the RF channel to the firmware default").clicked() { self.send_cmd("clearchannel".into()); }
-                    ui.separator();
-                    if ui.button("rssi_scan").on_hover_text("Scan channels for RF noise / interference").clicked() { self.send_cmd("rssi_scan".into()); }
-                });
-            });
-
-            section(ui, "r_system", "System", HUE_SYSTEM, false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("reboot").on_hover_text("Restart the receiver firmware").clicked() { self.send_cmd("reboot".into()); }
-                    if danger_button(ui, "dfu (UF2)", "Reboot into the UF2 bootloader to flash firmware") { self.send_cmd("dfu".into()); }
-                    if danger_button(ui, "dfu ota", "Reboot into over-the-air (BLE) update mode") { self.send_cmd("dfu ota".into()); }
-                });
-            });
-
-            section(ui, "r_data", "Data collection & OTA", HUE_DATA, false, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("collect from tracker id:");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_collect_id).desired_width(50.0).hint_text("0"));
-                    if ui.button("collect").on_hover_text("Stream raw data from one tracker by id").clicked() {
-                        let i = self.r_collect_id.trim().to_owned();
-                        if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("collect {i}")); }
-                    }
-                    if ui.button("collect off").on_hover_text("Stop data collection").clicked() { self.send_cmd("collect off".into()); }
-                    if ui.button("collect status").on_hover_text("Show data-collection state").clicked() { self.send_cmd("collect".into()); }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("ota status").on_hover_text("Show over-the-air update state").clicked() { self.send_cmd("ota".into()); }
-                    ui.separator();
-                    ui.label("ota info id:");
-                    ui.add(egui::TextEdit::singleline(&mut self.r_ota_info).desired_width(50.0).hint_text("0"));
-                    if ui.button("ota info").on_hover_text("Show OTA details for a tracker id").clicked() {
-                        let i = self.r_ota_info.trim().to_owned();
-                        if i.is_empty() { self.push_info("Enter a tracker id.".into()); } else { self.send_cmd(format!("ota info {i}")); }
-                    }
-                    if danger_button(ui, "ota abort", "Cancel an in-progress OTA update") { self.send_cmd("ota abort".into()); }
-                });
-            });
-
-            section(ui, "r_remote", "Remote commands -> tracker(s)", HUE_REMOTE, false, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Target:");
-                    ui.selectable_value(&mut self.rem_target_all, true, "All active");
-                    ui.selectable_value(&mut self.rem_target_all, false, "By ID");
-                    let allow_id_edit = !self.rem_target_all;
-                    ui.add_enabled(
-                        allow_id_edit,
-                        egui::TextEdit::singleline(&mut self.rem_target_id).desired_width(50.0).hint_text("0"),
-                    );
-                });
-
-                let target = self.remote_target();
-                ui.label(egui::RichText::new(format!("-> send {target} <command>")).color(MUTED).monospace());
-                ui.separator();
-
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("calibrate").on_hover_text("Zero the gyroscope on the target tracker(s)").clicked() { self.send_cmd(format!("send {target} calibrate")); }
-                    if ui.button("6-side").on_hover_text("Six-sided accel calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} 6-side")); }
-                    if ui.button("scan").on_hover_text("Re-detect the IMU on the target(s)").clicked() { self.send_cmd(format!("send {target} scan")); }
-                    if ui.button("ping").on_hover_text("Check the target tracker(s) respond").clicked() { self.send_cmd(format!("send {target} ping")); }
-                    if ui.button("meow").on_hover_text("").clicked() { self.send_cmd(format!("send {target} meow")); }
-                    if ui.button("reboot").on_hover_text("Restart the target tracker(s)").clicked() { self.send_cmd(format!("send {target} reboot")); }
-                    if ui.button("fusion reset").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} fusion")); }
-                    if danger_button(ui, "shutdown", "Power off the target tracker(s)") { self.send_cmd(format!("send {target} shutdown")); }
-                    if danger_button(ui, "clear pairing", "Make the target(s) forget this receiver") { self.send_cmd(format!("send {target} clear")); }
-                });
-
-                ui.add_space(2.0);
-                ui.label("Magnetometer:");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("mag on").on_hover_text("Enable the magnetometer on the target(s)").clicked() { self.send_cmd(format!("send {target} mag on")); }
-                    if ui.button("mag off").on_hover_text("Disable the magnetometer on the target(s)").clicked() { self.send_cmd(format!("send {target} mag off")); }
-                    if ui.button("mag clear").on_hover_text("Erase magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} mag clear")); }
-                    if ui.button("mag cal").on_hover_text("Start magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} mag cal")); }
-                });
-
-                ui.add_space(2.0);
-                ui.label("Reset:");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("reset zro").on_hover_text("Clear gyro zero offset on the target(s)").clicked() { self.send_cmd(format!("send {target} reset zro")); }
-                    if ui.button("reset acc").on_hover_text("Clear accelerometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} reset acc")); }
-                    if ui.button("reset bat").on_hover_text("Reset battery-gauge learning on the target(s)").clicked() { self.send_cmd(format!("send {target} reset bat")); }
-                    if ui.button("reset mag").on_hover_text("Clear magnetometer calibration on the target(s)").clicked() { self.send_cmd(format!("send {target} reset mag")); }
-                    if ui.button("reset tcal").on_hover_text("Clear temperature-calibration table on the target(s)").clicked() { self.send_cmd(format!("send {target} reset tcal")); }
-                    if ui.button("reset fusion").on_hover_text("Reset the fusion filter on the target(s)").clicked() { self.send_cmd(format!("send {target} reset fusion")); }
-                });
-
-                ui.add_space(2.0);
-                ui.label("Temperature calibration:");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("tcal on").on_hover_text("Enable temperature compensation on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal on")); }
-                    if ui.button("tcal off").on_hover_text("Disable temperature compensation on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal off")); }
-                    if ui.button("tcal auto on").on_hover_text("Auto-collect temperature data on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal auto on")); }
-                    if ui.button("tcal auto off").on_hover_text("Stop auto temperature collection on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal auto off")); }
-                    if ui.button("tcal boot on").on_hover_text("Recalibrate temperature each boot on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal boot on")); }
-                    if ui.button("tcal boot off").on_hover_text("Don't recalibrate temperature on boot on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal boot off")); }
-                    if ui.button("tcal clear").on_hover_text("Erase temperature-calibration table on the target(s)").clicked() { self.send_cmd(format!("send {target} tcal clear")); }
-                });
-
-                ui.add_space(2.0);
-                ui.label("Scheduling / test / bootloader:");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("tdma on").on_hover_text("Enable TDMA scheduling on the target(s)").clicked() { self.send_cmd(format!("send {target} tdma on")); }
-                    if ui.button("tdma off").on_hover_text("Disable TDMA scheduling on the target(s)").clicked() { self.send_cmd(format!("send {target} tdma off")); }
-                    if ui.button("test on").on_hover_text("Enter test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test on")); }
-                    if ui.button("test off").on_hover_text("Leave test mode on the target(s)").clicked() { self.send_cmd(format!("send {target} test off")); }
-                    if danger_button(ui, "dfu", "Reboot the target(s) into the UF2 bootloader") { self.send_cmd(format!("send {target} dfu")); }
-                    if danger_button(ui, "dfu ota", "Reboot the target(s) into OTA (BLE) update mode") { self.send_cmd(format!("send {target} dfu ota")); }
-                });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("sens X/Y/Z:");
-                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_x).desired_width(56.0).hint_text("x"));
-                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_y).desired_width(56.0).hint_text("y"));
-                    ui.add(egui::TextEdit::singleline(&mut self.rem_sens_z).desired_width(56.0).hint_text("z"));
-                    if ui.button("send sens").on_hover_text("Set per-axis gyro sensitivity on the target(s)").clicked() {
-                        let x = self.rem_sens_x.trim().to_owned();
-                        let y = self.rem_sens_y.trim().to_owned();
-                        let z = self.rem_sens_z.trim().to_owned();
-                        if x.is_empty() || y.is_empty() || z.is_empty() {
-                            self.push_info("Enter all three sens values.".into());
-                        } else {
-                            self.send_cmd(format!("send {target} sens {x},{y},{z}"));
-                        }
-                    }
-                    if ui.button("send sens reset").on_hover_text("Clear gyro sensitivity on the target(s)").clicked() { self.send_cmd(format!("send {target} sens reset")); }
-                });
-
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Channel commands apply to ALL trackers + receiver (firmware restriction):")
-                        .color(MUTED),
-                );
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.rem_channel).desired_width(56.0).hint_text("25"));
-                    if ui.button("send all channel").on_hover_text("Set the RF channel on every device at once (1–100)").clicked() {
-                        let c = self.rem_channel.trim().to_owned();
-                        if c.is_empty() { self.push_info("Enter a channel 1–100.".into()); } else { self.send_cmd(format!("send all channel {c}")); }
-                    }
-                    if ui.button("send all clearchannel").on_hover_text("Reset the RF channel to default on every device").clicked() { self.send_cmd("send all clearchannel".into()); }
-                });
-            });
-        });
-
-        ui.add_space(8.0);
-    }
 }
 
 impl eframe::App for App {
@@ -1854,7 +830,7 @@ impl eframe::App for App {
                 });
         });
 
-        if self.connection.is_some() || self.dfu_running || self.rdfu_running {
+        if self.conn.connection.is_some() || self.tdfu.running || self.rdfu.running {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
     }

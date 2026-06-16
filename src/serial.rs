@@ -13,8 +13,9 @@ use eframe::egui;
 use serialport::SerialPortType;
 
 /// Which firmware/role a connected device is running.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
+    #[default]
     Tracker,
     Receiver,
 }

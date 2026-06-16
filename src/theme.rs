@@ -1,4 +1,3 @@
-
 //! Visual theme: the colour palette, the coloured-section styling, and the small
 //! reusable widget helpers (primary button, danger button, description label).
 //! Pure presentation — no application state.

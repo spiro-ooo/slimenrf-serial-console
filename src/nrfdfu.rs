@@ -409,13 +409,28 @@ struct DfuSerial {
 impl DfuSerial {
     /// Open the port for DFU. Hardware flow control (rtscts) matches nrfutil's
     /// default; the bootloader CDC honours it.
+    ///
+    /// Retries on a busy / access-denied error: right after we disconnect the
+    /// console (or the device re-enumerates), the previous handle may not be fully
+    /// released yet — Windows in particular reports "Access is denied" for a brief
+    /// window. We back off and retry for a few seconds rather than failing outright.
     fn open(port_name: &str) -> Result<Self, String> {
-        let port = serialport::new(port_name, 115_200)
-            .timeout(Duration::from_millis(1000))
-            .flow_control(serialport::FlowControl::Hardware)
-            .open()
-            .map_err(|e| format!("cannot open {port_name}: {e}"))?;
-        Ok(Self { port, mtu: 0 })
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            match serialport::new(port_name, 115_200)
+                .timeout(Duration::from_millis(1000))
+                .flow_control(serialport::FlowControl::Hardware)
+                .open()
+            {
+                Ok(port) => return Ok(Self { port, mtu: 0 }),
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!("cannot open {port_name}: {e}"));
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
     }
 
     fn send(&mut self, payload: &[u8]) -> Result<(), String> {

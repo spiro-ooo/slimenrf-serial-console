@@ -7,6 +7,7 @@ mod dfu;
 mod nrfdfu;
 mod serial;
 mod theme;
+mod ui;
 
 use app::App;
 
