@@ -407,19 +407,25 @@ struct DfuSerial {
 }
 
 impl DfuSerial {
-    /// Open the port for DFU. Hardware flow control (rtscts) matches nrfutil's
-    /// default; the bootloader CDC honours it.
+    /// Open the port for DFU with the given flow-control mode.
+    ///
+    /// On the nRF52840 dongle this is a USB CDC ACM port, not a physical UART, so
+    /// there are no real RTS/CTS lines. nrfutil defaults to hardware flow control,
+    /// and it works on Linux because the CDC-ACM driver ignores it — but Windows'
+    /// COM driver honours the request and will block all transmission if CTS never
+    /// asserts, so the bootloader never sees our ping. The caller therefore tries
+    /// `Hardware` first and falls back to `None` (see `flash_one`).
     ///
     /// Retries on a busy / access-denied error: right after we disconnect the
     /// console (or the device re-enumerates), the previous handle may not be fully
     /// released yet — Windows in particular reports "Access is denied" for a brief
     /// window. We back off and retry for a few seconds rather than failing outright.
-    fn open(port_name: &str) -> Result<Self, String> {
+    fn open(port_name: &str, flow: serialport::FlowControl) -> Result<Self, String> {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             match serialport::new(port_name, 115_200)
                 .timeout(Duration::from_millis(1000))
-                .flow_control(serialport::FlowControl::Hardware)
+                .flow_control(flow)
                 .open()
             {
                 Ok(port) => return Ok(Self { port, mtu: 0 }),
@@ -667,22 +673,39 @@ fn flash_one(
         ctx.request_repaint();
     };
 
-    let mut dfu = DfuSerial::open(port)?;
-
-    // Handshake. Ping may need a few tries while the CDC settles.
-    let mut pinged = false;
-    let ping_deadline = Instant::now() + Duration::from_secs(5);
-    let mut ping_id = 1u8;
-    while Instant::now() < ping_deadline {
-        if dfu.ping(ping_id).is_ok() {
-            pinged = true;
-            break;
+    // Open + handshake. The dongle's USB-CDC bootloader has no real flow-control
+    // lines; Windows can block transmission if we request hardware flow control and
+    // CTS never asserts (the device then never sees our ping). So try hardware flow
+    // control first — matching nrfutil and what works on Linux — and if the ping
+    // never lands, reopen with flow control disabled. One of the two works on every
+    // OS/driver/dongle combination we've seen.
+    let ping = |dfu: &mut DfuSerial| -> bool {
+        let ping_deadline = Instant::now() + Duration::from_secs(3);
+        let mut ping_id = 1u8;
+        while Instant::now() < ping_deadline {
+            if dfu.ping(ping_id).is_ok() {
+                return true;
+            }
+            ping_id = ping_id.wrapping_add(1);
+            std::thread::sleep(Duration::from_millis(200));
         }
-        ping_id = ping_id.wrapping_add(1);
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    if !pinged {
-        return Err("device did not answer DFU ping (is it in bootloader mode?)".to_owned());
+        false
+    };
+
+    let mut dfu = DfuSerial::open(port, serialport::FlowControl::Hardware)?;
+    if !ping(&mut dfu) {
+        // Fall back to no flow control (the usual fix on Windows).
+        drop(dfu);
+        std::thread::sleep(Duration::from_millis(300));
+        let mut dfu2 = DfuSerial::open(port, serialport::FlowControl::None)?;
+        if !ping(&mut dfu2) {
+            return Err(
+                "device did not answer DFU ping (is it in bootloader mode? \
+                 try re-entering DFU with the magnet)"
+                    .to_owned(),
+            );
+        }
+        dfu = dfu2;
     }
 
     dfu.set_prn(0)?;
