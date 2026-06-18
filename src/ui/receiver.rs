@@ -256,6 +256,30 @@ impl App {
                 });
 
                 ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("auto-cal sens: spin");
+                    egui::ComboBox::from_id_salt("r_rem_sens_auto_axis")
+                        .selected_text(format!("{} axis", self.rf.rem_sens_auto_axis))
+                        .width(70.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.rf.rem_sens_auto_axis, "x".to_owned(), "x axis");
+                            ui.selectable_value(&mut self.rf.rem_sens_auto_axis, "y".to_owned(), "y axis");
+                            ui.selectable_value(&mut self.rf.rem_sens_auto_axis, "z".to_owned(), "z axis");
+                        });
+                    ui.add(egui::TextEdit::singleline(&mut self.rf.rem_sens_auto_rev).desired_width(44.0));
+                    ui.label("rotations");
+                    if ui.button("send sens auto").on_hover_text("Auto-calibrate gyro sensitivity on one axis on the target tracker(s): spin each tracker steadily about the chosen axis for the given rotations (default 5, max 100).").clicked() {
+                        let axis = self.rf.rem_sens_auto_axis.clone();
+                        let rev = self.rf.rem_sens_auto_rev.trim().to_owned();
+                        if rev.is_empty() {
+                            self.send_cmd(format!("send {target} sens auto {axis}"));
+                        } else {
+                            self.send_cmd(format!("send {target} sens auto {axis} {rev}"));
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new("Channel commands apply to ALL trackers + receiver (firmware restriction):")
                         .color(MUTED),

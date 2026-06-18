@@ -115,6 +115,31 @@ impl App {
                             if ui.button("sens reset").on_hover_text("Clear gyro sensitivity correction").clicked() { self.send_cmd("sens reset".into()); }
                         });
                         ui.end_row();
+
+                        ui.label("auto-calibrate sensitivity:");
+                        ui.horizontal(|ui| {
+                            ui.label("spin");
+                            egui::ComboBox::from_id_salt("t_sens_auto_axis")
+                                .selected_text(format!("{} axis", self.tf.sens_auto_axis))
+                                .width(70.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.tf.sens_auto_axis, "x".to_owned(), "x axis");
+                                    ui.selectable_value(&mut self.tf.sens_auto_axis, "y".to_owned(), "y axis");
+                                    ui.selectable_value(&mut self.tf.sens_auto_axis, "z".to_owned(), "z axis");
+                                });
+                            ui.add(egui::TextEdit::singleline(&mut self.tf.sens_auto_rev).desired_width(44.0));
+                            ui.label("rotations");
+                            if ui.button("sens auto").on_hover_text("Auto-calibrate gyro sensitivity on one axis: spin the tracker steadily about the chosen axis for the given number of full rotations (default 5, max 100).").clicked() {
+                                let axis = self.tf.sens_auto_axis.clone();
+                                let rev = self.tf.sens_auto_rev.trim().to_owned();
+                                if rev.is_empty() {
+                                    self.send_cmd(format!("sens auto {axis}"));
+                                } else {
+                                    self.send_cmd(format!("sens auto {axis} {rev}"));
+                                }
+                            }
+                        });
+                        ui.end_row();
                     });
             });
 

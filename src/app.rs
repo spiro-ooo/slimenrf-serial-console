@@ -69,16 +69,34 @@ impl Default for ConsoleState {
 }
 
 /// Tracker-mode parameter input fields.
-#[derive(Default)]
 pub(crate) struct TrackerForms {
     pub(crate) debug_dur: String,
     pub(crate) sens_x: String,
     pub(crate) sens_y: String,
     pub(crate) sens_z: String,
+    pub(crate) sens_auto_axis: String,
+    pub(crate) sens_auto_rev: String,
     pub(crate) set_addr: String,
     pub(crate) channel: String,
     pub(crate) tcal_test: String,
     pub(crate) tcal_remove: String,
+}
+
+impl Default for TrackerForms {
+    fn default() -> Self {
+        Self {
+            debug_dur: String::new(),
+            sens_x: String::new(),
+            sens_y: String::new(),
+            sens_z: String::new(),
+            sens_auto_axis: "y".to_owned(),
+            sens_auto_rev: "5".to_owned(),
+            set_addr: String::new(),
+            channel: String::new(),
+            tcal_test: String::new(),
+            tcal_remove: String::new(),
+        }
+    }
 }
 
 /// Receiver-mode parameter fields, including the receiver→tracker remote relay.
@@ -95,6 +113,8 @@ pub(crate) struct ReceiverForms {
     pub(crate) rem_sens_x: String,
     pub(crate) rem_sens_y: String,
     pub(crate) rem_sens_z: String,
+    pub(crate) rem_sens_auto_axis: String,
+    pub(crate) rem_sens_auto_rev: String,
 }
 
 impl Default for ReceiverForms {
@@ -112,6 +132,8 @@ impl Default for ReceiverForms {
             rem_sens_x: String::new(),
             rem_sens_y: String::new(),
             rem_sens_z: String::new(),
+            rem_sens_auto_axis: "y".to_owned(),
+            rem_sens_auto_rev: "5".to_owned(),
         }
     }
 }
