@@ -150,23 +150,23 @@ pub fn parse_dfu_zip(path: &std::path::Path) -> Result<Vec<DfuImage>, String> {
     // Read manifest.json.
     let manifest_text = {
         let mut f = zip
-            .by_name("manifest.json")
-            .map_err(|_| "package has no manifest.json — is this a Nordic DFU .zip?".to_owned())?;
+        .by_name("manifest.json")
+        .map_err(|_| "package has no manifest.json — is this a Nordic DFU .zip?".to_owned())?;
         let mut s = String::new();
         f.read_to_string(&mut s)
-            .map_err(|e| format!("cannot read manifest.json: {e}"))?;
+        .map_err(|e| format!("cannot read manifest.json: {e}"))?;
         s
     };
     let root: ManifestRoot = serde_json::from_str(&manifest_text)
-        .map_err(|e| format!("manifest.json is malformed: {e}"))?;
+    .map_err(|e| format!("manifest.json is malformed: {e}"))?;
 
     let read_file = |zip: &mut zip::ZipArchive<std::fs::File>, name: &str| -> Result<Vec<u8>, String> {
         let mut f = zip
-            .by_name(name)
-            .map_err(|_| format!("package is missing '{name}' named in the manifest"))?;
+        .by_name(name)
+        .map_err(|_| format!("package is missing '{name}' named in the manifest"))?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)
-            .map_err(|e| format!("cannot read '{name}': {e}"))?;
+        .map_err(|e| format!("cannot read '{name}': {e}"))?;
         Ok(buf)
     };
 
@@ -183,8 +183,8 @@ pub fn parse_dfu_zip(path: &std::path::Path) -> Result<Vec<DfuImage>, String> {
             let bin = read_file(&mut zip, &fw.bin_file)?;
             images.push(DfuImage {
                 name: label.to_owned(),
-                init_packet: init,
-                firmware: bin,
+                        init_packet: init,
+                        firmware: bin,
             });
         }
     }
@@ -233,10 +233,10 @@ pub fn hex_to_bin(hex_text: &str) -> Result<Vec<u8>, String> {
 
     let base = chunks.iter().map(|(a, _)| *a).min().unwrap();
     let end = chunks
-        .iter()
-        .map(|(a, d)| *a + d.len() as u32)
-        .max()
-        .unwrap();
+    .iter()
+    .map(|(a, d)| *a + d.len() as u32)
+    .max()
+    .unwrap();
     let size = (end - base) as usize;
     // Guard against absurd images (a malformed HEX with a stray high address could
     // otherwise ask us to allocate gigabytes).
@@ -360,15 +360,15 @@ pub fn image_from_hex(
     let app_hash = sha256_le(&firmware);
     let init_packet = build_init_packet(
         firmware.len() as u32,
-        &app_hash,
-        hw_version,
-        fw_version,
-        sd_req,
+                                        &app_hash,
+                                        hw_version,
+                                        fw_version,
+                                        sd_req,
     );
     Ok(DfuImage {
         name: "application".to_owned(),
-        init_packet,
-        firmware,
+       init_packet,
+       firmware,
     })
 }
 
@@ -378,15 +378,15 @@ pub fn image_from_hex(
 /// is ignored for `.zip`.
 pub fn load_images(path: &std::path::Path, sd_req: &[u16]) -> Result<Vec<DfuImage>, String> {
     let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
+    .extension()
+    .and_then(|e| e.to_str())
+    .map(|e| e.to_ascii_lowercase())
+    .unwrap_or_default();
     match ext.as_str() {
         "zip" => parse_dfu_zip(path),
         "hex" => {
             let text = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read .hex: {e}"))?;
+            .map_err(|e| format!("cannot read .hex: {e}"))?;
             // hw_version 52 matches nrfutil's nRF52 default; fw_version 1 is fine for
             // an unversioned bootloader. sd_req comes from the caller (default 0x00 =
             // no SoftDevice, which is correct for the ESB-based receiver).
@@ -409,26 +409,38 @@ struct DfuSerial {
 impl DfuSerial {
     /// Open the port for DFU with the given flow-control mode.
     ///
-    /// On the nRF52840 dongle this is a USB CDC ACM port, not a physical UART, so
-    /// there are no real RTS/CTS lines. nrfutil defaults to hardware flow control,
-    /// and it works on Linux because the CDC-ACM driver ignores it — but Windows'
-    /// COM driver honours the request and will block all transmission if CTS never
-    /// asserts, so the bootloader never sees our ping. The caller therefore tries
-    /// `Hardware` first and falls back to `None` (see `flash_one`).
+    /// On the nRF52840 dongle this is a USB CDC ACM port, not a physical UART. Two
+    /// things matter for Windows (where this otherwise silently fails while Linux
+    /// works):
+    ///
+    /// * **DTR must be asserted.** The CDC bootloader only exchanges data once the
+    ///   host raises Data-Terminal-Ready ("a terminal is present"). serialport-rs
+    ///   raises DTR automatically on *Linux* open, but not on Windows — so we set
+    ///   `dtr_on_open(true)` and also assert it explicitly after opening.
+    /// * **The port needs a moment to settle.** On Windows `open()` can return
+    ///   before the CDC pipe is ready, so the first writes are dropped; we sleep
+    ///   briefly and clear any stale buffered bytes before the caller pings.
     ///
     /// Retries on a busy / access-denied error: right after we disconnect the
     /// console (or the device re-enumerates), the previous handle may not be fully
-    /// released yet — Windows in particular reports "Access is denied" for a brief
-    /// window. We back off and retry for a few seconds rather than failing outright.
+    /// released yet — Windows reports "Access is denied" for a brief window.
     fn open(port_name: &str, flow: serialport::FlowControl) -> Result<Self, String> {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             match serialport::new(port_name, 115_200)
-                .timeout(Duration::from_millis(1000))
-                .flow_control(flow)
-                .open()
+            .timeout(Duration::from_millis(1000))
+            .flow_control(flow)
+            .dtr_on_open(true)
+            .open()
             {
-                Ok(port) => return Ok(Self { port, mtu: 0 }),
+                Ok(mut port) => {
+                    // Assert DTR explicitly too (Windows doesn't do it on open),
+                    // then let the CDC pipe settle and discard any stale bytes.
+                    let _ = port.write_data_terminal_ready(true);
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = port.clear(serialport::ClearBuffer::All);
+                    return Ok(Self { port, mtu: 0 });
+                }
                 Err(e) => {
                     if Instant::now() >= deadline {
                         return Err(format!("cannot open {port_name}: {e}"));
@@ -442,8 +454,8 @@ impl DfuSerial {
     fn send(&mut self, payload: &[u8]) -> Result<(), String> {
         let framed = slip_encode(payload);
         self.port
-            .write_all(&framed)
-            .map_err(|e| format!("serial write failed: {e}"))?;
+        .write_all(&framed)
+        .map_err(|e| format!("serial write failed: {e}"))?;
         self.port.flush().map_err(|e| format!("serial flush failed: {e}"))?;
         Ok(())
     }
@@ -502,7 +514,7 @@ impl DfuSerial {
         if resp[1] != op {
             return Err(format!(
                 "response for wrong opcode (sent 0x{:02X}, got 0x{:02X})",
-                op, resp[1]
+                               op, resp[1]
             ));
         }
         match resp[2] {
@@ -525,9 +537,9 @@ impl DfuSerial {
             return Err("no ping reply".to_owned());
         }
         let id_ok = resp.len() >= 3
-            && resp[0] == op::RESPONSE
-            && resp[1] == op::PING
-            && resp[2] == id;
+        && resp[0] == op::RESPONSE
+        && resp[1] == op::PING
+        && resp[2] == id;
         if id_ok || !resp.is_empty() {
             Ok(())
         } else {
@@ -673,12 +685,11 @@ fn flash_one(
         ctx.request_repaint();
     };
 
-    // Open + handshake. The dongle's USB-CDC bootloader has no real flow-control
-    // lines; Windows can block transmission if we request hardware flow control and
-    // CTS never asserts (the device then never sees our ping). So try hardware flow
-    // control first — matching nrfutil and what works on Linux — and if the ping
-    // never lands, reopen with flow control disabled. One of the two works on every
-    // OS/driver/dongle combination we've seen.
+    // Open + handshake. The real Windows fix is asserting DTR (done in
+    // DfuSerial::open). Flow control is secondary: the dongle's USB-CDC bootloader
+    // has no real RTS/CTS lines, and nrfutil talks to it with flow control *off*,
+    // so try `None` first (the known-good combination) and fall back to `Hardware`
+    // just in case a particular driver wants it. Either way DTR is asserted.
     let ping = |dfu: &mut DfuSerial| -> bool {
         let ping_deadline = Instant::now() + Duration::from_secs(3);
         let mut ping_id = 1u8;
@@ -692,17 +703,17 @@ fn flash_one(
         false
     };
 
-    let mut dfu = DfuSerial::open(port, serialport::FlowControl::Hardware)?;
+    let mut dfu = DfuSerial::open(port, serialport::FlowControl::None)?;
     if !ping(&mut dfu) {
-        // Fall back to no flow control (the usual fix on Windows).
+        // Fall back to hardware flow control.
         drop(dfu);
         std::thread::sleep(Duration::from_millis(300));
-        let mut dfu2 = DfuSerial::open(port, serialport::FlowControl::None)?;
+        let mut dfu2 = DfuSerial::open(port, serialport::FlowControl::Hardware)?;
         if !ping(&mut dfu2) {
             return Err(
                 "device did not answer DFU ping (is it in bootloader mode? \
-                 try re-entering DFU with the magnet)"
-                    .to_owned(),
+try re-entering DFU with the magnet)"
+.to_owned(),
             );
         }
         dfu = dfu2;
@@ -763,9 +774,9 @@ pub fn run_receiver_dfu(
         }
     };
     let summary: Vec<String> = images
-        .iter()
-        .map(|i| format!("{} ({} bytes)", i.name, i.firmware.len()))
-        .collect();
+    .iter()
+    .map(|i| format!("{} ({} bytes)", i.name, i.firmware.len()))
+    .collect();
     send(NrfProgress::Status(format!("Package OK: {}", summary.join(", "))));
 
     let expected = ports.len();
@@ -808,8 +819,8 @@ pub fn run_receiver_dfu(
 /// Send `dfu` to a receiver console port to trigger the bootloader. Best effort.
 fn trigger_dfu(port: &str, line_ending: &str) -> bool {
     match serialport::new(port, 115_200)
-        .timeout(Duration::from_millis(300))
-        .open()
+    .timeout(Duration::from_millis(300))
+    .open()
     {
         Ok(mut p) => {
             let _ = p.write_data_terminal_ready(true);
@@ -849,12 +860,12 @@ fn wait_for_bootloader_port(original: &str, timeout: Duration) -> Option<String>
         if let Some(p) = ports
             .iter()
             .find(|p| p.bootloader == Some(BootloaderKind::NordicDfu))
-        {
-            return Some(p.name.clone());
-        }
+            {
+                return Some(p.name.clone());
+            }
 
-        // Track whether the original port went away (a sign the reboot happened).
-        let original_present = ports.iter().any(|p| p.name == original);
+            // Track whether the original port went away (a sign the reboot happened).
+            let original_present = ports.iter().any(|p| p.name == original);
         if !original_present {
             saw_disappear = true;
         }
